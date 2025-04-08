@@ -7,6 +7,6 @@
 
 
 ```
-./go-forward -mode client -server example.com:7001 -local 10.36.6.156:22
+./go-forward -mode client -server example.com:7001 -local 127.0.0.1:8080
 ```
 
