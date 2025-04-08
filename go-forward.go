@@ -1,546 +1,181 @@
-// WARNING: This is a highly simplified proof-of-concept Go implementation
-// mirroring the basic Python example. It lacks many crucial features found
-// in production tools like frp (security, reliability, error handling,
-// multiplexing, UDP, HTTP proxying, etc.).
-// DO NOT USE IN PRODUCTION ENVIRONMENTS. Use the official frp project instead.
-
 package main
 
 import (
-	"bufio"
-	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
-	"os/signal"
-	"strings"
 	"sync"
-	"syscall"
-	"time"
 )
 
-// --- Configuration ---
 const (
-	// Shared Ports
-	defaultControlPort = 7000
-	defaultDataPort    = 7001
-	defaultPublicPort  = 6000
-
-	// Client Specific
-	defaultLocalHost = "127.0.0.1"
-	defaultLocalPort = 8080
-
-	bufferSize         = 4096
-	heartbeatInterval  = 30 * time.Second
-	connectionTimeout  = 10 * time.Second // Timeout for establishing connections
-	ioTimeout          = 15 * time.Second // Timeout for idle I/O during piping or waiting
-	retryDelay         = 10 * time.Second // Delay before client retries connection
-	pendingDataTimeout = 15 * time.Second // How long server waits for client data conn
+	ServerMode = "server"
+	ClientMode = "client"
 )
 
-// --- Global Server State (Protected by Mutex) ---
-var (
-	serverControlConn net.Conn
-	controlConnMutex  sync.Mutex
-	// Maps a user connection to a channel that will receive the client's data connection
-	pendingDataConns map[string]chan net.Conn // Key: userConn.RemoteAddr().String()
-	pendingMutex     sync.Mutex
-)
-
-// --- Main Entry Point ---
 func main() {
-	mode := flag.String("mode", "", "Run mode: 'server' or 'client'")
-	serverAddr := flag.String("server", "YOUR_PUBLIC_SERVER_IP", "Server address (required for client)") // Client needs this
-	controlPort := flag.Int("cport", defaultControlPort, "Control port")
-	dataPort := flag.Int("dport", defaultDataPort, "Data port")
-	publicPort := flag.Int("pport", defaultPublicPort, "Public access port (server)")
-	localHost := flag.String("lhost", defaultLocalHost, "Local service host (client)")
-	localPort := flag.Int("lport", defaultLocalPort, "Local service port (client)")
+	mode := flag.String("mode", "", "运行模式: 'server' 或 'client'")
+
+	// --- Server 参数 ---
+	publicListenAddr := flag.String("public", "0.0.0.0:7000", "[Server模式] 监听外部用户连接的地址")
+	clientListenAddr := flag.String("listen", "0.0.0.0:7001", "[Server模式] 监听内网客户端连接的地址")
+
+	// --- Client 参数 ---
+	serverClientAddr := flag.String("server", "example.com:7001", "[Client模式] 连接公网服务器的客户端监听地址")
+	localServiceAddr := flag.String("local", "127.0.0.1:1080", "[Client模式] 要暴露的内网服务地址")
 
 	flag.Parse()
 
 	if *mode == "" {
-		log.Fatal("Error: -mode ('server' or 'client') is required")
+		fmt.Println("错误: 必须指定 -mode 参数 ('server' 或 'client')")
+		flag.Usage()
+		os.Exit(1)
 	}
 
-	// Setup context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle termination signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigChan
-		log.Printf("Received signal: %v. Shutting down...", sig)
-		cancel() // Trigger context cancellation
-	}()
-
-	// Initialize server state if needed
-	if *mode == "server" {
-		pendingDataConns = make(map[string]chan net.Conn)
-	}
-
-	log.Printf("Starting in %s mode", *mode)
+	log.Printf("启动模式: %s", *mode)
 
 	switch *mode {
-	case "server":
-		if err := runServer(ctx, *controlPort, *publicPort, *dataPort); err != nil {
-			log.Fatalf("Server error: %v", err)
-		}
-	case "client":
-		if *serverAddr == "YOUR_PUBLIC_SERVER_IP" || *serverAddr == "" {
-			log.Fatal("Error: -server address is required for client mode")
-		}
-		runClient(ctx, *serverAddr, *controlPort, *dataPort, *localHost, *localPort)
+	case ServerMode:
+		runServer(*publicListenAddr, *clientListenAddr)
+	case ClientMode:
+		runClient(*serverClientAddr, *localServiceAddr)
 	default:
-		log.Fatalf("Invalid mode: %s", *mode)
+		fmt.Printf("错误: 无效的模式 '%s'\n", *mode)
+		flag.Usage()
+		os.Exit(1)
 	}
-
-	log.Println("Shutdown complete.")
 }
 
-// --- Data Piping Utility ---
-func pipeData(ctx context.Context, conn1, conn2 net.Conn, name1, name2 string) {
+// --- Server 端逻辑 ---
+func runServer(publicAddr, clientAddr string) {
+	log.Printf("服务器: 监听公共端口 %s", publicAddr)
+	publicListener, err := net.Listen("tcp", publicAddr)
+	if err != nil {
+		log.Fatalf("服务器: 监听公共端口失败: %v", err)
+	}
+	defer publicListener.Close()
+
+	log.Printf("服务器: 监听客户端端口 %s", clientAddr)
+	clientListener, err := net.Listen("tcp", clientAddr)
+	if err != nil {
+		log.Fatalf("服务器: 监听客户端端口失败: %v", err)
+	}
+	defer clientListener.Close()
+
+	log.Println("服务器: 等待连接...")
+
+	for {
+		// 1. 接受外部用户连接
+		userConn, err := publicListener.Accept()
+		if err != nil {
+			log.Printf("服务器: 接受用户连接失败: %v", err)
+			continue // 继续接受下一个
+		}
+		log.Printf("服务器: 接受到来自 %s 的用户连接", userConn.RemoteAddr())
+
+		// 2. 等待并接受内网客户端连接 (为这个用户连接)
+		// 注意：这种简单的配对方式在高并发下有问题，真正的frp用控制连接来协调
+		log.Printf("服务器: 等待来自客户端的配对连接 (端口 %s)...", clientAddr)
+		clientConn, err := clientListener.Accept()
+		if err != nil {
+			log.Printf("服务器: 接受客户端配对连接失败: %v", err)
+			userConn.Close() // 关闭对应的用户连接
+			continue         // 继续接受下一个用户连接
+		}
+		log.Printf("服务器: 接受到来自 %s 的客户端配对连接", clientConn.RemoteAddr())
+
+		// 3. 开始转发
+		log.Printf("服务器: 开始为 %s <-> %s 转发数据", userConn.RemoteAddr(), clientConn.RemoteAddr())
+		go forwardTraffic(userConn, clientConn)
+	}
+}
+
+// --- Client 端逻辑 ---
+func runClient(serverAddr, localAddr string) {
+	log.Printf("客户端: 将连接服务器 %s 并转发到本地服务 %s", serverAddr, localAddr)
+
+	// 注意：这个简单的客户端不知道何时应该连接服务器的client端口
+	// 它只是不断尝试建立连接对。实际的frp客户端会通过控制连接
+	// 接收到服务器的指令后，才发起用于数据传输的连接。
+	// 为了模拟，我们让客户端在需要时才连接，但这需要服务器端逻辑配合
+	// 这里我们做一个简化：客户端循环连接，适用于服务器端简单配对逻辑
+	for {
+		log.Println("客户端: 尝试连接服务器和本地服务...")
+
+		// 1. 连接公网服务器 (用于数据传输的端口)
+		serverConn, err := net.Dial("tcp", serverAddr)
+		if err != nil {
+			log.Printf("客户端: 连接服务器 %s 失败: %v。稍后重试...", serverAddr, err)
+			// 在实际应用中应该有退避策略
+			// time.Sleep(5 * time.Second)
+			continue
+		}
+		log.Printf("客户端: 成功连接到服务器 %s", serverAddr)
+
+		// 2. 连接本地服务
+		localConn, err := net.Dial("tcp", localAddr)
+		if err != nil {
+			log.Printf("客户端: 连接本地服务 %s 失败: %v", localAddr, err)
+			serverConn.Close() // 关闭到服务器的连接
+			continue
+		}
+		log.Printf("客户端: 成功连接到本地服务 %s", localAddr)
+
+		// 3. 开始转发
+		log.Printf("客户端: 开始为 %s <-> %s 转发数据", serverAddr, localAddr)
+		// 这里也需要阻塞或者等待转发完成，否则循环会立即开始下一次连接尝试
+		// forwardTraffic 会阻塞，直到其中一个连接关闭
+		forwardTraffic(serverConn, localConn)
+		log.Println("客户端: 转发结束，重新建立连接...")
+	}
+
+}
+
+// --- 双向流量转发 ---
+func forwardTraffic(conn1 net.Conn, conn2 net.Conn) {
+	log.Printf("转发: 开始 %s <-> %s", conn1.RemoteAddr(), conn2.RemoteAddr())
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	closer := func(err error) {
-		// Try closing both connections on any error or completion
-		conn1.Close()
-		conn2.Close()
-		if err != nil && err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
-			log.Printf("[Pipe %s<->%s] Error during copy: %v", name1, name2, err)
-		}
+	closer := func() {
+		// 使用 sync.Once 确保只关闭一次
+		var once sync.Once
+		once.Do(func() {
+			conn1.Close()
+			conn2.Close()
+			log.Printf("转发: 连接关闭 %s, %s", conn1.RemoteAddr(), conn2.RemoteAddr())
+		})
 	}
 
-	copyData := func(dst net.Conn, src net.Conn, srcName, dstName string) {
+	// Goroutine 1: conn1 -> conn2
+	go func() {
 		defer wg.Done()
-		// Apply a deadline for copying to prevent leaks on idle connections
-		if ioTimeout > 0 {
-			src.SetReadDeadline(time.Now().Add(ioTimeout))
-		}
-		_, err := io.Copy(dst, src)
-		if err != nil {
-			// If it's just a timeout, renew it if context isn't done
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() && ctx.Err() == nil {
-				if ioTimeout > 0 {
-					src.SetReadDeadline(time.Now().Add(ioTimeout)) // Renew deadline
-				}
-				// Re-attempt copy or handle differently? For simplicity, we exit.
-				log.Printf("[Pipe %s->%s] Read timeout, closing pipe direction.", srcName, dstName)
-			} else {
-				closer(err) // Close on non-timeout errors or if context is cancelled
+		defer closer() // 确保另一个连接也关闭
+		written, err := io.Copy(conn2, conn1)
+		if err != nil && err != io.EOF {
+			// 忽略 "use of closed network connection" 错误，因为可能是对方先关闭
+			if opErr, ok := err.(*net.OpError); !ok || opErr.Err.Error() != "use of closed network connection" {
+				log.Printf("转发错误 (%s -> %s): %v", conn1.RemoteAddr(), conn2.RemoteAddr(), err)
 			}
-		} else {
-			closer(nil) // Close on successful EOF
 		}
-
-	}
-
-	log.Printf("[Pipe %s<->%s] Starting data transfer", name1, name2)
-	go copyData(conn1, conn2, name2, name1) // Copy conn2 -> conn1
-	go copyData(conn2, conn1, name1, name2) // Copy conn1 -> conn2
-
-	wg.Wait() // Wait for both copy directions to finish
-	log.Printf("[Pipe %s<->%s] Transfer finished", name1, name2)
-}
-
-// --- Server Implementation ---
-
-func runServer(ctx context.Context, controlPort, publicPort, dataPort int) error {
-	var wg sync.WaitGroup
-
-	// Listener function
-	listen := func(port int, handler func(context.Context, net.Conn)) error {
-		addr := fmt.Sprintf("0.0.0.0:%d", port)
-		listener, err := net.Listen("tcp", addr)
-		if err != nil {
-			return fmt.Errorf("failed to listen on %s: %w", addr, err)
-		}
-		defer listener.Close()
-		log.Printf("Server listening on %s", addr)
-
-		// Goroutine to close listener when context is cancelled
-		go func() {
-			<-ctx.Done()
-			listener.Close()
-		}()
-
-		// Accept loop
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				// Check if the error is due to context cancellation / listener being closed
-				select {
-				case <-ctx.Done():
-					log.Printf("Listener on port %d stopped due to context cancellation.", port)
-					return nil
-				default:
-					log.Printf("Error accepting connection on port %d: %v", port, err)
-					// Don't return, maybe temporary error? Or maybe check specific errors
-					if opErr, ok := err.(*net.OpError); ok && !opErr.Temporary() {
-						return fmt.Errorf("non-temporary accept error on port %d: %w", port, err)
-					}
-					continue // Try again on temporary errors
-				}
-			}
-			wg.Add(1)
-			go func(c net.Conn) {
-				defer wg.Done()
-				defer c.Close() // Ensure connection is closed when handler exits
-				handler(ctx, c)
-			}(conn)
-		}
-	}
-
-	// Start listeners concurrently
-	errChan := make(chan error, 3) // Channel to collect errors from listeners
-
-	go func() { errChan <- listen(controlPort, handleControlConnection) }()
-	go func() { errChan <- listen(publicPort, handlePublicConnection) }()
-	go func() { errChan <- listen(dataPort, handleDataConnection) }()
-
-	// Wait for context cancellation or a listener error
-	select {
-	case <-ctx.Done():
-		log.Println("Server context cancelled, waiting for connections to finish...")
-		// Wait for active connections to finish (optional timeout)
-		// wg.Wait() // Note: This might block shutdown indefinitely if connections hang
-		return nil // Normal shutdown
-	case err := <-errChan:
-		// If one listener fails critically, trigger shutdown for others
-		// cancel() // Trigger context cancellation via main() defer or explicitly here
-		return err // Return the critical error
-	}
-}
-
-func handleControlConnection(ctx context.Context, conn net.Conn) {
-	addr := conn.RemoteAddr().String()
-	log.Printf("[Server Ctrl] Control connection accepted from %s", addr)
-
-	controlConnMutex.Lock()
-	if serverControlConn != nil {
-		log.Printf("[Server Ctrl] Another client tried to connect from %s. Closing old connection from %s.", addr, serverControlConn.RemoteAddr().String())
-		serverControlConn.Close() // Close the previous one
-	}
-	serverControlConn = conn
-	controlConnMutex.Unlock()
-
-	defer func() {
-		controlConnMutex.Lock()
-		if serverControlConn == conn { // Make sure we are closing the one we reference
-			serverControlConn = nil
-			log.Printf("[Server Ctrl] Cleaned up control connection reference for %s", addr)
-		}
-		controlConnMutex.Unlock()
-		conn.Close() // Ensure it's closed on exit
-		log.Printf("[Server Ctrl] Control connection closed for %s", addr)
+		log.Printf("转发: %s -> %s 写入 %d 字节", conn1.RemoteAddr(), conn2.RemoteAddr(), written)
 	}()
 
-	reader := bufio.NewReader(conn)
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("[Server Ctrl] Context cancelled, closing control conn %s", addr)
-			return
-		default:
-			// Add read deadline to detect dead connections
-			conn.SetReadDeadline(time.Now().Add(heartbeatInterval + ioTimeout))
-			cmd, err := reader.ReadString('\n')
-			if err != nil {
-				if err == io.EOF {
-					log.Printf("[Server Ctrl] Control connection closed by client %s", addr)
-				} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					log.Printf("[Server Ctrl] Control connection %s timed out waiting for command/ping.", addr)
-				} else {
-					log.Printf("[Server Ctrl] Error reading from control connection %s: %v", addr, err)
-				}
-				return // Exit handler
+	// Goroutine 2: conn2 -> conn1
+	go func() {
+		defer wg.Done()
+		defer closer() // 确保另一个连接也关闭
+		written, err := io.Copy(conn1, conn2)
+		if err != nil && err != io.EOF {
+			if opErr, ok := err.(*net.OpError); !ok || opErr.Err.Error() != "use of closed network connection" {
+				log.Printf("转发错误 (%s -> %s): %v", conn2.RemoteAddr(), conn1.RemoteAddr(), err)
 			}
-
-			cmd = strings.TrimSpace(cmd)
-			//log.Printf("[Server Ctrl] Received command from %s: %s", addr, cmd)
-			if cmd == "PING" {
-				//log.Printf("[Server Ctrl] Responding PONG to %s", addr)
-				conn.SetWriteDeadline(time.Now().Add(ioTimeout))
-				_, err := conn.Write([]byte("PONG\n"))
-				if err != nil {
-					log.Printf("[Server Ctrl] Error writing PONG to %s: %v", addr, err)
-					return // Exit handler
-				}
-			} else if cmd != "" {
-				log.Printf("[Server Ctrl] Received unknown command from %s: %s", addr, cmd)
-			}
-			// Reset read deadline after successful read
-			conn.SetReadDeadline(time.Time{}) // Remove deadline or set to zero value
 		}
-	}
-}
-
-func handlePublicConnection(ctx context.Context, userConn net.Conn) {
-	userAddr := userConn.RemoteAddr().String()
-	log.Printf("[Server Public] Public connection accepted from %s", userAddr)
-
-	controlConnMutex.Lock()
-	ctrlConn := serverControlConn // Get current control connection
-	controlConnMutex.Unlock()
-
-	if ctrlConn == nil {
-		log.Printf("[Server Public] No client control connection available for %s. Closing.", userAddr)
-		userConn.Close()
-		return
-	}
-
-	// Channel to wait for the client's data connection
-	dataConnChan := make(chan net.Conn, 1) // Buffered channel size 1
-
-	pendingMutex.Lock()
-	pendingDataConns[userAddr] = dataConnChan // Register interest
-	pendingMutex.Unlock()
-
-	defer func() { // Cleanup pending entry
-		pendingMutex.Lock()
-		delete(pendingDataConns, userAddr)
-		pendingMutex.Unlock()
-		userConn.Close() // Ensure user conn is closed if pipe doesn't start
-		log.Printf("[Server Public] Cleaned up pending state for %s", userAddr)
+		log.Printf("转发: %s -> %s 写入 %d 字节", conn2.RemoteAddr(), conn1.RemoteAddr(), written)
 	}()
 
-	// Notify the client via the control connection
-	log.Printf("[Server Public] Notifying client about new connection from %s", userAddr)
-	ctrlConn.SetWriteDeadline(time.Now().Add(ioTimeout))
-	_, err := ctrlConn.Write([]byte("NEW_CONNECTION\n"))
-	if err != nil {
-		log.Printf("[Server Public] Failed to notify client for %s: %v", userAddr, err)
-		return
-	}
-
-	// Wait for the client to establish the data connection
-	log.Printf("[Server Public] Waiting for data connection from client for user %s...", userAddr)
-	select {
-	case clientDataConn, ok := <-dataConnChan:
-		if !ok {
-			log.Printf("[Server Public] Data connection channel closed unexpectedly for %s", userAddr)
-			return
-		}
-		if clientDataConn == nil { // Should not happen with current logic, but check
-			log.Printf("[Server Public] Received nil data connection for %s", userAddr)
-			return
-		}
-		log.Printf("[Server Public] Received data connection %s for user %s. Starting pipe.",
-			clientDataConn.RemoteAddr().String(), userAddr)
-		// Start piping data between user and client's data connection
-		pipeData(ctx, userConn, clientDataConn, fmt.Sprintf("user_%s", userAddr), "client_data") // Blocks until pipe finishes
-
-	case <-time.After(pendingDataTimeout):
-		log.Printf("[Server Public] Timed out waiting for client data connection for %s", userAddr)
-		// Optionally notify client control connection? (More complex)
-
-	case <-ctx.Done():
-		log.Printf("[Server Public] Context cancelled while waiting for data connection for %s", userAddr)
-	}
-}
-
-func handleDataConnection(ctx context.Context, clientDataConn net.Conn) {
-	clientAddr := clientDataConn.RemoteAddr().String()
-	log.Printf("[Server Data] Potential data connection accepted from %s", clientAddr)
-
-	// This matching logic is simplistic and potentially racy.
-	// A better approach would use unique IDs generated by the server
-	// sent to the client, which the client includes when making the data conn.
-	// For this example, we find the *first* pending channel.
-	var targetChan chan net.Conn
-	var userAddr string
-
-	pendingMutex.Lock()
-	// Iterate map to find a waiting channel (order isn't guaranteed)
-	for addr, ch := range pendingDataConns {
-		// Check if channel is still valid (not closed by timeout/cleanup)
-		// We can't directly check if it's closed without reading,
-		// so we rely on the fact handlePublicConnection cleans up on timeout.
-		// Try a non-blocking send? No, just pass it. handlePublic will timeout if needed.
-		userAddr = addr
-		targetChan = ch
-		break // Found one
-	}
-	if targetChan != nil {
-		// Remove it immediately while still holding the lock to prevent reuse
-		delete(pendingDataConns, userAddr)
-	}
-	pendingMutex.Unlock()
-
-	if targetChan != nil {
-		log.Printf("[Server Data] Matched data conn %s to pending user %s", clientAddr, userAddr)
-		select {
-		case targetChan <- clientDataConn:
-			log.Printf("[Server Data] Sent data conn %s to handler for user %s", clientAddr, userAddr)
-			// The handlePublicConnection goroutine will now take ownership of clientDataConn
-			// Do not close clientDataConn here.
-		case <-time.After(1 * time.Second): // Short timeout for channel send
-			log.Printf("[Server Data] Failed to send data conn %s to handler (timeout) for user %s", clientAddr, userAddr)
-			clientDataConn.Close()
-		case <-ctx.Done():
-			log.Printf("[Server Data] Context cancelled, closing data conn %s for user %s", clientAddr, userAddr)
-			clientDataConn.Close()
-		}
-	} else {
-		log.Printf("[Server Data] No pending user request found for data connection %s. Closing.", clientAddr)
-		clientDataConn.Close()
-	}
-}
-
-// --- Client Implementation ---
-
-func runClient(ctx context.Context, serverAddr string, controlPort, dataPort int, localHost string, localPort int) {
-	serverControlAddr := fmt.Sprintf("%s:%d", serverAddr, controlPort)
-	serverDataAddr := fmt.Sprintf("%s:%d", serverAddr, dataPort)
-	localServiceAddr := fmt.Sprintf("%s:%d", localHost, localPort)
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("[Client] Context cancelled, exiting client loop.")
-			return
-		default:
-			log.Printf("[Client] Attempting to connect to server control port %s", serverControlAddr)
-			controlConn, err := net.DialTimeout("tcp", serverControlAddr, connectionTimeout)
-			if err != nil {
-				log.Printf("[Client] Failed to connect to control port: %v. Retrying in %v...", err, retryDelay)
-				select {
-				case <-time.After(retryDelay):
-					continue // Retry connection
-				case <-ctx.Done():
-					log.Println("[Client] Context cancelled during retry delay.")
-					return
-				}
-			}
-
-			log.Printf("[Client] Control connection established to %s", serverControlAddr)
-			// Create a new context for this connection session, linked to the main context
-			sessionCtx, sessionCancel := context.WithCancel(ctx)
-
-			// Run command handler in a goroutine
-			var wg sync.WaitGroup
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer sessionCancel() // Cancel session context when handler exits
-				defer controlConn.Close()
-				handleServerCommands(sessionCtx, controlConn, serverDataAddr, localServiceAddr)
-				log.Println("[Client] Command handler goroutine finished.")
-			}()
-
-			// Wait for the session context to be cancelled (either by main ctx or handler exit)
-			<-sessionCtx.Done()
-			log.Println("[Client] Session finished. Cleaning up.")
-			// Ensure connection is closed if handler didn't close it
-			controlConn.Close()
-			// Wait for the handler goroutine to fully finish
-			wg.Wait()
-
-			// Check if main context is cancelled before retrying
-			if ctx.Err() != nil {
-				log.Println("[Client] Main context cancelled, stopping retry loop.")
-				return
-			}
-
-			log.Printf("[Client] Disconnected or handler finished. Retrying connection in %v...", retryDelay)
-			select {
-			case <-time.After(retryDelay):
-				// Continue loop
-			case <-ctx.Done():
-				log.Println("[Client] Main context cancelled during post-session retry delay.")
-				return
-			}
-		}
-	}
-}
-
-func handleServerCommands(ctx context.Context, controlConn net.Conn, serverDataAddr, localServiceAddr string) {
-	reader := bufio.NewReader(controlConn)
-	ticker := time.NewTicker(heartbeatInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("[Client Handler] Context cancelled.")
-			return
-		case <-ticker.C:
-			// Send heartbeat
-			// log.Println("[Client Handler] Sending PING")
-			controlConn.SetWriteDeadline(time.Now().Add(ioTimeout))
-			_, err := controlConn.Write([]byte("PING\n"))
-			if err != nil {
-				log.Printf("[Client Handler] Failed to send PING: %v", err)
-				return // Exit handler, triggers reconnect in runClient
-			}
-		default:
-			// Check for commands from server (with timeout)
-			controlConn.SetReadDeadline(time.Now().Add(1 * time.Second)) // Short deadline for non-blocking check
-			cmd, err := reader.ReadString('\n')
-
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// This is expected, just means no command received yet
-					controlConn.SetReadDeadline(time.Time{}) // Clear deadline until next check/heartbeat
-					continue                                 // Go back to select
-				}
-				if err == io.EOF {
-					log.Println("[Client Handler] Server closed control connection.")
-				} else {
-					log.Printf("[Client Handler] Error reading control connection: %v", err)
-				}
-				return // Exit handler, triggers reconnect
-			}
-			controlConn.SetReadDeadline(time.Time{}) // Clear deadline after successful read
-
-			cmd = strings.TrimSpace(cmd)
-			// log.Printf("[Client Handler] Received command: %s", cmd)
-
-			switch cmd {
-			case "PONG":
-				// log.Println("[Client Handler] Received PONG")
-				// Heartbeat acknowledged
-			case "NEW_CONNECTION":
-				log.Println("[Client Handler] Received NEW_CONNECTION request.")
-				// Handle in a new goroutine to avoid blocking command loop
-				go handleNewConnectionRequest(ctx, serverDataAddr, localServiceAddr)
-			case "":
-				// Ignore empty lines potentially caused by extra newlines
-			default:
-				log.Printf("[Client Handler] Received unknown command: %s", cmd)
-			}
-		}
-	}
-}
-
-func handleNewConnectionRequest(ctx context.Context, serverDataAddr, localServiceAddr string) {
-	log.Printf("[Client NewConn] Dialing local service %s", localServiceAddr)
-	localConn, err := net.DialTimeout("tcp", localServiceAddr, connectionTimeout)
-	if err != nil {
-		log.Printf("[Client NewConn] Failed to connect to local service %s: %v", localServiceAddr, err)
-		// Maybe notify server control? (Simplistic: do nothing)
-		return
-	}
-	defer localConn.Close()
-	log.Printf("[Client NewConn] Connected to local service %s", localServiceAddr)
-
-	log.Printf("[Client NewConn] Dialing server data port %s", serverDataAddr)
-	serverDataConn, err := net.DialTimeout("tcp", serverDataAddr, connectionTimeout)
-	if err != nil {
-		log.Printf("[Client NewConn] Failed to connect to server data port %s: %v", serverDataAddr, err)
-		return
-	}
-	defer serverDataConn.Close()
-	log.Printf("[Client NewConn] Connected to server data port %s", serverDataAddr)
-
-	// Start piping data
-	log.Println("[Client NewConn] Starting data pipe")
-	pipeData(ctx, serverDataConn, localConn, "server_data", fmt.Sprintf("local_%s", localServiceAddr))
-	log.Println("[Client NewConn] Data pipe finished.")
+	wg.Wait() // 等待两个转发goroutine结束
+	log.Printf("转发: 完成 %s <-> %s", conn1.RemoteAddr(), conn2.RemoteAddr())
 }
