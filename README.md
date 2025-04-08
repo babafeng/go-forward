@@ -1,5 +1,12 @@
 # go-forward
 
 
--connect-server home.3749.xin:7001 -connect-local 10.36.0.174:22
--connect-server home.3749.xin:7001 -connect-local 10.36.06.156:28080
+```
+./go-forward -mode server -public 0.0.0.0:7000 -listen 0.0.0.0:7001
+```
+
+
+```
+./go-forward -mode client -server example.com:7001 -local 10.36.6.156:22
+```
+
