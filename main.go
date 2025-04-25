@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag" // Import flag package
 	"fmt"
 	"io"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/yamux"
 )
@@ -15,48 +17,59 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	if len(os.Args) < 2 {
-		printUsage()
-		return
-	}
+	listenAddr := flag.String("L", "", "Port for the server's control plane (e.g., 7000) or client's reverse port (e.g., 2080//127.0.0.1:1080)")
+	serverAddr := flag.String("F", "", "Server address (host:port) for the client to connect to (e.g., example.com:7000)")
 
-	mode := os.Args[1]
+	// Parse flags
+	flag.Parse()
+
+	var publicPort, localTargetAddr string
+
+	mode := "server"
+	controlPort := *listenAddr
+
+	if strings.Contains(*listenAddr, "//") {
+		mode = "client"
+		listenAddrSplit := strings.Split(*listenAddr, "//")
+		if len(listenAddrSplit) != 2 {
+			log.Println("Error: -L must be in the format 'publicPort//localTargetAddr' (e.g., 2080//127.0.0.1:1080)")
+			printUsage()
+			return
+		}
+
+		publicPort = listenAddrSplit[0]
+		localTargetAddr = listenAddrSplit[1]
+	}
 
 	switch mode {
 	case "server":
-		if len(os.Args) != 3 {
-			log.Println("Server mode requires control port")
+		if controlPort == "" {
+			log.Println("Error: -L is required for server mode")
 			printUsage()
 			return
 		}
-		controlPort := os.Args[2]
-		if !strings.HasPrefix(controlPort, ":") {
-			controlPort = ":" + controlPort
+		// Ensure port has a colon prefix
+		cp := controlPort
+		if !strings.HasPrefix(cp, ":") {
+			cp = ":" + cp
 		}
-		runServer(controlPort)
+		runServer(cp)
 	case "client":
-		if len(os.Args) != 5 {
-			log.Println("Client mode requires server address, public port, and local target address")
+		if publicPort == "" || localTargetAddr == "" {
+			log.Println("Error: Parsing public port or local target from -L failed for client mode.")
 			printUsage()
 			return
 		}
-		serverAddr := os.Args[2]
-		publicPort := os.Args[3]
-		localTargetAddr := os.Args[4]
-		runClient(serverAddr, publicPort, localTargetAddr)
-	default:
-		log.Printf("Unknown mode: %s\n", mode)
-		printUsage()
+		runClient(*serverAddr, publicPort, localTargetAddr)
 	}
 }
 
 func printUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  forward server <control_port>")
-	fmt.Println("  forward client <server_addr> <public_port> <local_target_addr>")
-	fmt.Println("\nExamples:")
-	fmt.Println("  forward server 7000")
-	fmt.Println("  forward client your.server.com:7000 2080 127.0.0.1:1080")
+	fmt.Fprintln(os.Stderr, "\nOptions:")
+	flag.PrintDefaults()
+	fmt.Fprintln(os.Stderr, "\nExamples:")
+	fmt.Fprintln(os.Stderr, "  Server: go-forward -L 7000")
+	fmt.Fprintln(os.Stderr, "  Client (with specific server): go-forward -L 2080//127.0.0.1:1080 -F your.server.com:7000")
 }
 
 // --- Server Logic ---
@@ -81,38 +94,73 @@ func runServer(controlAddr string) {
 }
 
 func handleControlConnection(conn net.Conn) {
+	log.Printf("Handling new control connection from %s\n", conn.RemoteAddr())
+
 	// Use Yamux for multiplexing over the control connection
 	session, err := yamux.Server(conn, nil)
 	if err != nil {
-		log.Printf("Failed to create yamux server session: %v\n", err)
+		log.Printf("Failed to create yamux server session for %s: %v\n", conn.RemoteAddr(), err)
 		conn.Close()
 		return
 	}
 	defer session.Close()
 	defer log.Printf("Control session closed for %s\n", conn.RemoteAddr())
 
+	// Channel to signal listener goroutines to stop
+	stopChan := make(chan struct{})
+	var wg sync.WaitGroup // Wait for listener goroutine to finish before closing session fully
+
 	for {
 		// Accept streams initiated by the client (for control messages)
 		stream, err := session.Accept()
 		if err != nil {
-			log.Printf("Failed to accept stream from %s: %v\n", conn.RemoteAddr(), err)
-			break // Session likely closed
+			log.Printf("Failed to accept stream from %s: %v. Closing associated listeners.\n", conn.RemoteAddr(), err)
+			close(stopChan) // Signal all associated listeners to stop
+			break           // Exit the loop
 		}
 
 		// Handle control messages in a separate goroutine
-		go handleControlStream(session, stream)
+		// Pass the stopChan so listener knows when to stop
+		wg.Add(1) // Increment counter for the handleControlStream goroutine (which might start a listener)
+		go func() {
+			defer wg.Done() // Decrement counter when handleControlStream finishes
+			handleControlStream(session, stream, stopChan, &wg)
+		}()
 	}
+
+	// Wait for all goroutines started by this session (like listeners) to finish cleaning up
+	log.Printf("Waiting for associated listeners for %s to close...\n", conn.RemoteAddr())
+	wg.Wait()
+	log.Printf("All associated listeners closed for %s.\n", conn.RemoteAddr())
 }
 
-func handleControlStream(session *yamux.Session, stream net.Conn) {
+// Modified to remove clientID parameter
+func handleControlStream(session *yamux.Session, stream net.Conn, stopChan chan struct{}, wg *sync.WaitGroup) {
 	defer stream.Close()
 
 	// Read the request (e.g., "LISTEN <public_port>")
 	buf := make([]byte, 128) // Adjust buffer size as needed
+
+	// Set a deadline for reading the request
+	err := stream.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if err != nil {
+		log.Printf("Failed to set read deadline on control stream: %v\n", err)
+		return
+	}
+
 	n, err := stream.Read(buf)
 	if err != nil {
-		log.Printf("Failed to read from control stream: %v\n", err)
+		// Don't log EOF or timeout errors as critical failures here
+		if err != io.EOF && !os.IsTimeout(err) {
+			log.Printf("Failed to read from control stream: %v\n", err)
+		}
 		return
+	}
+	// Reset deadline
+	err = stream.SetReadDeadline(time.Time{})
+	if err != nil {
+		// Log non-critical error
+		log.Printf("Failed to reset read deadline on control stream: %v\n", err)
 	}
 
 	request := string(buf[:n])
@@ -120,59 +168,106 @@ func handleControlStream(session *yamux.Session, stream net.Conn) {
 
 	if len(parts) == 2 && parts[0] == "LISTEN" {
 		publicPort := parts[1]
-		log.Printf("Received request to listen on public port %s from %s\n", publicPort, session.RemoteAddr())
+		log.Printf("Received request to listen on public port %s\n", publicPort)
+
 		// Start listening on the requested public port in a goroutine
-		go listenPublic(session, ":"+publicPort)
+		// Pass session, stopChan, and wg
+		wg.Add(1) // Increment counter for the listener goroutine
+		go listenPublic(session, ":"+publicPort, stopChan, wg)
 		// Optionally send confirmation back via the stream (omitted for simplicity)
 	} else {
 		log.Printf("Received unknown request on control stream: %s\n", request)
+		// If the stream wasn't for LISTEN, we didn't start a listener, so decrement the counter added in handleControlConnection
+		// This requires careful wg management. Let's adjust: only Add in handleControlStream if listenPublic is actually called.
+		// The wg.Add(1) before calling handleControlStream covers the stream handling itself.
+		// Let's remove wg passing here and manage it differently.
+		// Simpler: wg in handleControlConnection waits for handleControlStream goroutines.
+		// We need a separate mechanism if listenPublic needs to signal completion *back* to handleControlConnection.
+		// Let's stick to the original plan: wg passed down.
 	}
 }
 
-func listenPublic(session *yamux.Session, publicAddr string) {
+// Modified to remove clientID parameter
+func listenPublic(session *yamux.Session, publicAddr string, stopChan <-chan struct{}, wg *sync.WaitGroup) {
+	defer wg.Done() // Decrement counter when this listener goroutine exits
+
 	publicListener, err := net.Listen("tcp", publicAddr)
 	if err != nil {
 		log.Printf("Failed to listen on public port %s: %v\n", publicAddr, err)
 		// Optionally notify the client about the failure via a new stream (omitted)
 		return
 	}
-	defer publicListener.Close()
-	log.Printf("Server listening on public port %s for %s\n", publicAddr, session.RemoteAddr())
+	defer publicListener.Close() // Ensure listener is closed when function returns
+	log.Printf("Server listening on public port %s\n", publicAddr)
+
+	// Goroutine to close the listener when stopChan is closed or session ends
+	go func() {
+		select {
+		case <-stopChan:
+			log.Printf("Stop signal received, closing listener on %s\n", publicAddr)
+		case <-session.CloseChan(): // Also stop if the session itself closes gracefully
+			log.Printf("Session closed, closing listener on %s\n", publicAddr)
+		}
+		// Closing the listener will cause the Accept loop below to break
+		publicListener.Close()
+	}()
 
 	for {
+		// Check if the session is already closed before accepting
+		if session.IsClosed() {
+			log.Printf("Session is closed, stopping listener %s before accept.\n", publicAddr)
+			return // Exit if session closed
+		}
+
 		publicConn, err := publicListener.Accept()
 		if err != nil {
-			// Check if the session is closed, if so, stop listening
-			if session.IsClosed() {
-				log.Printf("Session closed, stopping listener on %s\n", publicAddr)
-				return
+			// Check if the error is due to the listener being closed intentionally
+			select {
+			case <-stopChan:
+				log.Printf("Listener %s closed gracefully due to stop signal.\n", publicAddr)
+			case <-session.CloseChan():
+				log.Printf("Listener %s closed gracefully due to session close.\n", publicAddr)
+			default:
+				// If stopChan/session isn't closed, it's a different error
+				if !strings.Contains(err.Error(), "use of closed network connection") {
+					log.Printf("Failed to accept public connection on %s: %v\n", publicAddr, err)
+				} else {
+					// This is expected if the listener was closed by the goroutine above
+					log.Printf("Listener %s closed, accept loop terminating.\n", publicAddr)
+				}
 			}
-			log.Printf("Failed to accept public connection on %s: %v\n", publicAddr, err)
-			continue
+			return // Exit the accept loop
 		}
+
+		// Double check session status after accept, before opening stream
+		if session.IsClosed() {
+			log.Printf("Session closed after accept on %s, dropping connection from %s\n", publicAddr, publicConn.RemoteAddr())
+			publicConn.Close()
+			continue // Or return, depending on desired behavior
+		}
+
 		log.Printf("Accepted public connection on %s from %s\n", publicAddr, publicConn.RemoteAddr())
 
 		// Open a new stream to the client over the existing session
 		proxyStream, err := session.Open()
 		if err != nil {
-			log.Printf("Failed to open yamux stream to client %s: %v\n", session.RemoteAddr(), err)
+			log.Printf("Failed to open yamux stream: %v\n", err)
 			publicConn.Close() // Close the public connection if we can't reach the client
-			// If session is closed, stop accepting new connections
+			// If session is closed, the loop will exit on the next iteration's check or Accept error
 			if session.IsClosed() {
-				log.Printf("Session closed, stopping listener on %s\n", publicAddr)
-				return
+				log.Printf("Session closed, cannot open new stream for %s.\n", publicAddr)
+				return // Exit listener loop if session is gone
 			}
-			continue
+			continue // Try accepting next connection
 		}
 
 		// Start proxying data between the public connection and the client stream
-		log.Printf("Starting proxy between %s <-> yamux stream for %s\n", publicConn.RemoteAddr(), session.RemoteAddr())
+		log.Printf("Starting proxy between public %s <-> yamux stream for local target\n", publicConn.RemoteAddr())
 		go proxy(publicConn, proxyStream)
 	}
 }
 
 // --- Client Logic ---
-
 func runClient(serverAddr, publicPort, localTargetAddr string) {
 	log.Printf("Connecting to server %s\n", serverAddr)
 	conn, err := net.Dial("tcp", serverAddr)
@@ -236,8 +331,25 @@ func handleProxyStream(proxyStream net.Conn, localTargetAddr string) {
 }
 
 // --- Proxy Logic ---
-
 func proxy(conn1 io.ReadWriteCloser, conn2 io.ReadWriteCloser) {
+	var conn1Local, conn1Remote, conn2Local, conn2Remote string
+
+	if nc1, ok := conn1.(net.Conn); ok {
+		conn1Local = nc1.LocalAddr().String()
+		conn1Remote = nc1.RemoteAddr().String()
+	} else {
+		conn1Local, conn1Remote = "unknown", "unknown"
+	}
+
+	if nc2, ok := conn2.(net.Conn); ok {
+		conn2Local = nc2.LocalAddr().String()
+		conn2Remote = nc2.RemoteAddr().String()
+	} else {
+		conn2Local, conn2Remote = "unknown", "unknown"
+	}
+
+	log.Printf("[%s <-> %s] and [%s <-> %s]", conn1Remote, conn1Local, conn2Local, conn2Remote)
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -253,8 +365,7 @@ func proxy(conn1 io.ReadWriteCloser, conn2 io.ReadWriteCloser) {
 		if err != nil && err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
 			log.Printf("Proxy error (conn2->conn1): %v\n", err)
 		}
-		log.Printf("Proxy conn2->conn1 finished")
-
+		// log.Printf("Proxy conn2->conn1 finished [%s <-> %s] and [%s <-> %s]", conn1Local, conn1Remote, conn2Local, conn2Remote)
 	}()
 
 	go func() {
@@ -264,7 +375,7 @@ func proxy(conn1 io.ReadWriteCloser, conn2 io.ReadWriteCloser) {
 		if err != nil && err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
 			log.Printf("Proxy error (conn1->conn2): %v\n", err)
 		}
-		log.Printf("Proxy conn1->conn2 finished")
+		// log.Printf("Proxy conn1->conn2 finished [%s <-> %s] and [%s <-> %s]", conn1Local, conn1Remote, conn2Local, conn2Remote)
 	}()
 
 	wg.Wait()
