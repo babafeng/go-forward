@@ -14,7 +14,6 @@ import (
 )
 
 // --- Server Logic ---
-
 func runServer(controlAddr string) {
 	addr := controlAddr
 	if !strings.HasPrefix(addr, ":") {
@@ -119,7 +118,7 @@ func handleControlStream(session *yamux.Session, stream net.Conn, stopChan chan 
 		// Start listening on the requested public port in a goroutine
 		// Pass session, stopChan, and wg
 		wg.Add(1) // Increment counter for the listener goroutine
-		go listenPublic(session, ":"+publicPort, stopChan, wg)
+		listenPublic(session, ":"+publicPort, stopChan, wg)
 		// Optionally send confirmation back via the stream (omitted for simplicity)
 	} else {
 		log.Printf("Received unknown request on control stream: %s\n", request)
