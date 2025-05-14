@@ -80,3 +80,10 @@ go-forward -L 1002//127.0.0.1:1080 -F your.server.com:7000
 
 ...
 ```
+
+Taking macOS as an example, you can set an alias IP for the loopback address, such as 10.0.0.2 (assuming it is an intranet address and there is no local routing). Then access port 22 of 10.0.0.2 and forward the traffic to proxy 22.
+
+```bash
+sudo ifconfig lo0 alias 10.0.0.2 up
+go-forward -L 2222//proxy.com:2222
+```
