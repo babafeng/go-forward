@@ -302,15 +302,11 @@ func proxy(conn1 io.ReadWriteCloser, conn2 io.ReadWriteCloser) {
 	if nc1, ok := conn1.(net.Conn); ok {
 		conn1Local = nc1.LocalAddr().String()
 		conn1Remote = nc1.RemoteAddr().String()
-	} else {
-		conn1Local, conn1Remote = "unknown", "unknown"
 	}
 
 	if nc2, ok := conn2.(net.Conn); ok {
 		conn2Local = nc2.LocalAddr().String()
 		conn2Remote = nc2.RemoteAddr().String()
-	} else {
-		conn2Local, conn2Remote = "unknown", "unknown"
 	}
 
 	log.Printf("[%s <-> %s] and [%s <-> %s]", conn1Remote, conn1Local, conn2Local, conn2Remote)
@@ -318,29 +314,24 @@ func proxy(conn1 io.ReadWriteCloser, conn2 io.ReadWriteCloser) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	closer := func(c io.Closer) {
-		// Ensure close is called only once, ignore errors as the other side might have closed already
-		_ = c.Close()
-	}
+	closer := func(c io.Closer) { _ = c.Close() }
 
 	go func() {
 		defer wg.Done()
-		defer closer(conn2) // Close conn2 if copying from conn1 finishes/errors
+		defer closer(conn2)
 		_, err := io.Copy(conn1, conn2)
 		if err != nil && err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
-			log.Printf("Proxy error (conn2->conn1): %v\n", err)
+			log.Printf("Proxy error (conn2->conn1): %v", err)
 		}
-		// log.Printf("Proxy conn2->conn1 finished [%s <-> %s] and [%s <-> %s]", conn1Local, conn1Remote, conn2Local, conn2Remote)
 	}()
 
 	go func() {
 		defer wg.Done()
-		defer closer(conn1) // Close conn1 if copying from conn2 finishes/errors
+		defer closer(conn1)
 		_, err := io.Copy(conn2, conn1)
 		if err != nil && err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
-			log.Printf("Proxy error (conn1->conn2): %v\n", err)
+			log.Printf("Proxy error (conn1->conn2): %v", err)
 		}
-		// log.Printf("Proxy conn1->conn2 finished [%s <-> %s] and [%s <-> %s]", conn1Local, conn1Remote, conn2Local, conn2Remote)
 	}()
 
 	wg.Wait()

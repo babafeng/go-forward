@@ -55,6 +55,23 @@ type ForwardConfig struct {
 	TargetEndPort   int
 }
 
+// 添加辅助函数用于解析端口范围
+func parsePortRange(rangeStr, sep string) (int, int, error) {
+	parts := strings.Split(rangeStr, sep)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid range: %s", rangeStr)
+	}
+	start, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	end, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, err
+	}
+	return start, end, nil
+}
+
 // --- Main Function ---
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -136,38 +153,27 @@ func main() {
 				fwdCfg.IsRange = isRange
 
 				if isRange {
-					// Parse local range
-					localRangeParts := strings.SplitN(localPart, "-", 2)
-					targetHostPortRange := strings.SplitN(targetPart, ":", 2) // Split host:portRange first
-					if len(localRangeParts) != 2 || len(targetHostPortRange) != 2 {
+					localStart, localEnd, err := parsePortRange(localPart, "-")
+					if err != nil {
+						log.Printf("Error parsing local port range in %s: %v\n", lVal, err)
+						continue
+					}
+					fwdCfg.LocalStartPort = localStart
+					fwdCfg.LocalEndPort = localEnd
+
+					targetHostPortRange := strings.SplitN(targetPart, ":", 2)
+					if len(targetHostPortRange) != 2 {
 						log.Printf("Error: Invalid range format in %s. Expected 'localStart-localEnd//host:targetStart-targetEnd'\n", lVal)
 						continue
 					}
-					targetHost := targetHostPortRange[0]
-					targetRangePart := targetHostPortRange[1]
-					targetRangeParts := strings.SplitN(targetRangePart, "-", 2)
-					if len(targetRangeParts) != 2 {
-						log.Printf("Error: Invalid target range format in %s. Expected 'host:targetStart-targetEnd'\n", lVal)
-						continue
-					}
-
-					// Convert ports to int
-					var err error
-					fwdCfg.LocalStartPort, err = strconv.Atoi(localRangeParts[0])
-					if err == nil {
-						fwdCfg.LocalEndPort, err = strconv.Atoi(localRangeParts[1])
-					}
-					if err == nil {
-						fwdCfg.TargetStartPort, err = strconv.Atoi(targetRangeParts[0])
-					}
-					if err == nil {
-						fwdCfg.TargetEndPort, err = strconv.Atoi(targetRangeParts[1])
-					}
-
+					fwdCfg.TargetHost = targetHostPortRange[0]
+					targetStart, targetEnd, err := parsePortRange(targetHostPortRange[1], "-")
 					if err != nil {
-						log.Printf("Error parsing port numbers in range %s: %v\n", lVal, err)
+						log.Printf("Error parsing target port range in %s: %v\n", lVal, err)
 						continue
 					}
+					fwdCfg.TargetStartPort = targetStart
+					fwdCfg.TargetEndPort = targetEnd
 
 					// Validate ranges
 					if fwdCfg.LocalStartPort > fwdCfg.LocalEndPort || fwdCfg.TargetStartPort > fwdCfg.TargetEndPort {
@@ -180,7 +186,6 @@ func main() {
 						log.Printf("Error: Local port range size (%d) must match target port range size (%d) in %s\n", localRangeSize+1, targetRangeSize+1, lVal)
 						continue
 					}
-					fwdCfg.TargetHost = targetHost
 					log.Printf("Parsed Forward Range Config: Local=%d-%d, Target=%s:%d-%d\n", fwdCfg.LocalStartPort, fwdCfg.LocalEndPort, fwdCfg.TargetHost, fwdCfg.TargetStartPort, fwdCfg.TargetEndPort)
 
 				} else { // Single port forward
@@ -196,9 +201,6 @@ func main() {
 				forwards = append(forwards, fwdCfg)
 			}
 		} else {
-			if lVal != "" {
-
-			}
 			re := regexp.MustCompile(`^[0-9:]+$`)
 			if re.MatchString(lVal) {
 				servers = append(servers, ServerConfig{

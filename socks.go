@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync" // 新增导入
 	"time"
 )
 
@@ -38,13 +39,24 @@ func local_socks_proxy(proxyListenAddr, username, password string) {
 	}
 }
 
+// 新增：使用 sync.Pool 复用缓冲区以降低内存分配次数
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 512)
+		return &b
+	},
+}
+
 // Modified signature to accept username and password
 func handleSocks5Connection(clientConn net.Conn, serverUser, serverPass string) {
 	defer clientConn.Close()
 
-	// --- 1. Method Selection ---
-	buf := make([]byte, 257) // Max possible size for method selection + auth request
+	bufPtr := bufPool.Get().(*[]byte)
+	defer bufPool.Put(bufPtr)
+	buf := *bufPtr
+	defer bufPool.Put(buf)
 
+	// --- 1. Method Selection ---
 	// Read Version and NMETHODS
 	// ... (same as before) ...
 	n, err := clientConn.Read(buf[:2])

@@ -76,7 +76,7 @@ func listenAndForwardSinglePort(localPort int, cfg ForwardConfig) {
 		return
 	}
 	defer listener.Close()
-	log.Printf("Forwarder listening on %s, forwarding to %s\n", localListenAddr, currentTargetAddr)
+	log.Printf("Forwarder listening on %s, forwarding to %s", localListenAddr, currentTargetAddr)
 
 	for {
 		client, err := listener.Accept()
@@ -99,9 +99,6 @@ func listenAndForwardSinglePort(localPort int, cfg ForwardConfig) {
 				return
 			}
 			defer remote.Close()
-			log.Printf("Forwarding %s -> %s (range)", client.RemoteAddr(), currentTargetAddr)
-
-			// Use the standard proxy/transfer function
 			proxy(client, remote)
 		}()
 	}
