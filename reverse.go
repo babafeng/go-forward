@@ -1,125 +1,39 @@
 package main
 
 import (
-	// <-- 添加 bytes 包
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
+	"encoding/base64"
 	"fmt"
+	"go-forward/mux"
+	"go-forward/tools" // 确保导入 tools 包
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"strings"
 	"sync"
-	"time"
 )
-
-// certCache 用于缓存已生成的证书，以便同一个域名多次握手复用
-var (
-	certCache      = make(map[string]tls.Certificate)
-	certCacheMutex sync.Mutex
-)
-
-// generateSelfSignedCert 根据传入的域名或 IP 生成一个自签名证书
-func generateSelfSignedCert(host string) (tls.Certificate, error) {
-	// 生成 RSA 私钥（2048 位）
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	// 设置证书有效期（当前到 1 年后）
-	notBefore := time.Now()
-	notAfter := notBefore.Add(365 * 24 * time.Hour)
-
-	// 生成一个随机序列号
-	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	// 配置证书模板
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			CommonName: host,
-		},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-
-	// 根据 host 判断是 IP 地址还是 DNS 名称
-	if ip := net.ParseIP(host); ip != nil {
-		template.IPAddresses = []net.IP{ip}
-	} else {
-		template.DNSNames = []string{host}
-	}
-
-	// 根据模板生成证书，注意此处自签名，故使用同一个模板做签名和被签名对象
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	// 将生成的证书和私钥编码为 PEM 格式
-	certPEM, keyPEM := pemEncode(derBytes, priv)
-	return tls.X509KeyPair(certPEM, keyPEM)
-}
-
-// pemEncode 将 DER 格式的数据编码为 PEM 格式
-func pemEncode(derBytes []byte, key *rsa.PrivateKey) ([]byte, []byte) {
-	certPemBlock := &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: derBytes,
-	}
-	keyPemBlock := &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	}
-	certPEM := pem.EncodeToMemory(certPemBlock)
-	keyPEM := pem.EncodeToMemory(keyPemBlock)
-	return certPEM, keyPEM
-}
 
 // --- Server Logic ---
-func runServer(controlAddr string) {
+func runServer(controlAddr string, serverHost string) {
 	addr := controlAddr
 	if !strings.HasPrefix(addr, ":") {
 		addr = ":" + addr
 	}
-
-	tlsConfig := &tls.Config{
-		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			// 根据 ClientHello 中的 ServerName 生成证书，若没有提供，则采用 "localhost"
-			host := chi.ServerName
-			if host == "" {
-				host = "example.com"
-			}
-			certCacheMutex.Lock()
-			defer certCacheMutex.Unlock()
-			if cert, ok := certCache[host]; ok {
-				return &cert, nil
-			}
-			cert, err := generateSelfSignedCert(host)
-			if err != nil {
-				return nil, err
-			}
-			certCache[host] = cert
-			return &cert, nil
-		},
-		MinVersion: tls.VersionTLS13,
-		MaxVersion: tls.VersionTLS13,
+	certPEM, keyPEM := tools.GenerateSelfSignedCert(serverHost)
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		log.Fatalf("Failed to parse certificate: %v\n", err)
 	}
 
-	log.Printf("Starting server control plane on %s\n", controlAddr)
+	fmt.Printf("%s\n", base64.StdEncoding.EncodeToString([]byte(certPEM)))
+
+	tlsConfig, err := tools.NewServerTLSConfig(cert)
+	if err != nil {
+		log.Fatalf("Failed to create server TLS config: %v\n", err)
+	}
+
+	log.Printf("Starting server control plane on %s:%s \n", serverHost, controlAddr)
 	listener, err := tls.Listen("tcp", addr, tlsConfig)
 	if err != nil {
 		log.Fatalf("Failed to listen tls on control port %s: %v\n", controlAddr, err)
@@ -138,7 +52,7 @@ func runServer(controlAddr string) {
 }
 func handleControlConnection(conn net.Conn) {
 	// Use Yamux for multiplexing over the control connection
-	session, err := muxServer(conn, nil)
+	session, err := mux.Server(conn, nil)
 	if err != nil {
 		log.Printf("Failed to create yamux server session: %v\n", err)
 		conn.Close()
@@ -160,7 +74,7 @@ func handleControlConnection(conn net.Conn) {
 	}
 }
 
-func handleControlStream(session *Session, stream net.Conn) {
+func handleControlStream(session *mux.Session, stream net.Conn) {
 	defer stream.Close()
 
 	// Read the request (e.g., "LISTEN <public_port>")
@@ -185,7 +99,7 @@ func handleControlStream(session *Session, stream net.Conn) {
 	}
 }
 
-func listenPublic(session *Session, publicAddr string) {
+func listenPublic(session *mux.Session, publicAddr string) {
 	publicListener, err := net.Listen("tcp", publicAddr)
 	if err != nil {
 		log.Printf("Failed to listen on public port %s: %v\n", publicAddr, err)
@@ -229,12 +143,19 @@ func listenPublic(session *Session, publicAddr string) {
 
 // --- Client Logic ---
 
-func runClient(serverAddr, publicPort, localTargetAddr string) {
+func runClient(serverAddr, publicPort, localTargetAddr string, cert string) {
 	log.Printf("Connecting to server %s\n", serverAddr)
 
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
+	caPool := x509.NewCertPool()
+	certBytes, err := base64.StdEncoding.DecodeString(cert)
+	if err != nil {
+		log.Fatalf("failed to decode base64 cert: %v", err)
 	}
+	if !caPool.AppendCertsFromPEM(certBytes) {
+		log.Fatal("failed to append CA cert")
+	}
+
+	tlsConfig := tools.NewClientTLSConfig(caPool) // 使用 tools 包中的函数
 
 	conn, err := tls.Dial("tcp", serverAddr, tlsConfig)
 	if err != nil {
@@ -243,7 +164,7 @@ func runClient(serverAddr, publicPort, localTargetAddr string) {
 	log.Printf("Connected to server %s\n", serverAddr)
 
 	// Create yamux client session
-	session, err := muxClient(conn, nil)
+	session, err := mux.Client(conn, nil)
 	if err != nil {
 		log.Fatalf("Failed to create yamux client session: %v\n", err)
 	}

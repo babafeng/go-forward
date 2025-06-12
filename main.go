@@ -1,15 +1,15 @@
 package main
 
 import (
-	"flag" // Import flag package
+	"flag"
 	"fmt"
-	"log"     // Import net package
-	"net/url" // Import net/url package
+	"log"
+	"net/url"
 	"os"
 	"regexp"
-	"strconv" // Import strconv package
+	"strconv"
 	"strings"
-	"sync" // Import sync package
+	"sync"
 	"time"
 )
 
@@ -41,6 +41,7 @@ type ClientConfig struct {
 
 type ServerConfig struct {
 	PublicPort string
+	ServerHost string
 }
 
 // Updated ForwardConfig for ranges
@@ -82,6 +83,8 @@ func main() {
 		"  Rev Tunnel: publicPort//localTargetAddr (requires -F)\n"+
 		"  Forward:    listenPort//targetAddr (without -F)")
 	serverAddr := flag.String("F", "", "Server address (host:port) for reverse tunnel client mode")
+	serverHost := flag.String("H", "", "H is used to tls cert/hostname verification")
+	cert := flag.String("C", "", "H is used to tls cert/hostname verification")
 
 	flag.Parse()
 
@@ -205,6 +208,7 @@ func main() {
 			if re.MatchString(lVal) {
 				servers = append(servers, ServerConfig{
 					PublicPort: lVal,
+					ServerHost: *serverHost,
 				})
 			} else {
 				log.Printf("Warning: Ignoring unsupported -L format: %s (Server mode not supported in multi-service setup)\n", lVal)
@@ -253,7 +257,7 @@ func main() {
 		wg.Add(1)
 		go func(cfg ServerConfig) {
 			defer wg.Done()
-			runServer(cfg.PublicPort)
+			runServer(cfg.PublicPort, cfg.ServerHost) // Pass the whole config struct
 		}(f)
 	}
 
@@ -268,7 +272,7 @@ func main() {
 		go func(cfg ClientConfig) {
 			defer wg.Done()
 			// Note: runClient runs indefinitely until connection breaks
-			runClient(cfg.ServerAddr, cfg.PublicPort, cfg.LocalTargetAddr)
+			runClient(cfg.ServerAddr, cfg.PublicPort, cfg.LocalTargetAddr, *cert)
 			log.Printf("Reverse tunnel client (%s//%s) disconnected from server %s.\n", cfg.PublicPort, cfg.LocalTargetAddr, cfg.ServerAddr)
 		}(c)
 	}
@@ -283,7 +287,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "\nOptions:")
 	flag.PrintDefaults()
 	fmt.Fprintln(os.Stderr, "\nExamples:")
-	fmt.Fprintln(os.Stderr, "  Reverse Tunnel Server: go-forward -L 7000 (Note: Server mode is exclusive, use dedicated flag if needed alongside others)")
+	fmt.Fprintln(os.Stderr, "  Reverse Tunnel Server: go-forward -L 7000 -H example.com (Note: Server mode is exclusive, use dedicated flag if needed alongside others, -H is used to tls cert/hostname verification)")
 	fmt.Fprintln(os.Stderr, "  Reverse Tunnel Client: go-forward -L 2080//127.0.0.1:1080 -F your.server.com:7000")
 	fmt.Fprintln(os.Stderr, "  SOCKS5 Proxy (No Auth): go-forward -L socks5://0.0.0.0:1080")
 	fmt.Fprintln(os.Stderr, "  SOCKS5 Proxy (Auth): go-forward -L socks5://myuser:mypass@0.0.0.0:1080")

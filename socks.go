@@ -54,7 +54,6 @@ func handleSocks5Connection(clientConn net.Conn, serverUser, serverPass string) 
 	bufPtr := bufPool.Get().(*[]byte)
 	defer bufPool.Put(bufPtr)
 	buf := *bufPtr
-	defer bufPool.Put(buf)
 
 	// --- 1. Method Selection ---
 	// Read Version and NMETHODS

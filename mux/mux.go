@@ -1,4 +1,4 @@
-package main
+package mux
 
 import (
 	"fmt"
@@ -94,7 +94,7 @@ func VerifyConfig(config *Config) error {
 // Server is used to initialize a new server-side connection.
 // There must be at most one server-side connection. If a nil config is
 // provided, the DefaultConfiguration will be used.
-func muxServer(conn io.ReadWriteCloser, config *Config) (*Session, error) {
+func Server(conn io.ReadWriteCloser, config *Config) (*Session, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -106,7 +106,7 @@ func muxServer(conn io.ReadWriteCloser, config *Config) (*Session, error) {
 
 // Client is used to initialize a new client-side connection.
 // There must be at most one client-side connection.
-func muxClient(conn io.ReadWriteCloser, config *Config) (*Session, error) {
+func Client(conn io.ReadWriteCloser, config *Config) (*Session, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
