@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// 限制并发连接数
+var maxConcurrentConns = 100
+var sem = make(chan struct{}, maxConcurrentConns)
+
 // Modified signature to accept username and password
 func local_socks_proxy(proxyListenAddr, username, password string) {
 	// Address parsing is now done in main.go
@@ -34,8 +38,19 @@ func local_socks_proxy(proxyListenAddr, username, password string) {
 			continue
 		}
 		log.Printf("Accepted SOCKS5 connection from %s\n", clientConn.RemoteAddr())
-		// Pass credentials to the handler
-		go handleSocks5Connection(clientConn, username, password)
+		select {
+		case sem <- struct{}{}:
+			go func() {
+				defer func() {
+					<-sem
+				}()
+				// Pass credentials to the handler
+				handleSocks5Connection(clientConn, username, password)
+			}()
+		default:
+			log.Printf("Too many concurrent connections, rejecting client %s\n", clientConn.RemoteAddr())
+			clientConn.Close()
+		}
 	}
 }
 

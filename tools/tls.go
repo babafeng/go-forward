@@ -36,6 +36,9 @@ func GenerateSelfSignedCert(host string) ([]byte, []byte) {
 	// 生成一个随机序列号
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	if err != nil {
+		log.Fatalf("failed to generate serial number: %v", err)
+	}
 
 	// 配置证书模板
 	template := x509.Certificate{
@@ -57,8 +60,11 @@ func GenerateSelfSignedCert(host string) ([]byte, []byte) {
 		template.DNSNames = []string{host}
 	}
 
-	// 根据模板生成证书，注意此处自签名，故使用同一个模板做签名和被签名对象
+	// 根据模板生成证书，注意此处自签名，使用同一个模板做签名和被签名对象
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		log.Fatalf("failed to create certificate: %v", err)
+	}
 
 	// 将生成的证书和私钥编码为 PEM 格式
 	cert, key := pemEncode(derBytes, priv)

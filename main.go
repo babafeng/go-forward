@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
@@ -276,6 +277,16 @@ func main() {
 			log.Printf("Reverse tunnel client (%s//%s) disconnected from server %s.\n", cfg.PublicPort, cfg.LocalTargetAddr, cfg.ServerAddr)
 		}(c)
 	}
+
+	// Graceful shutdown on interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	go func() {
+		<-sigChan
+		log.Println("Received interrupt signal, exiting...")
+		// Perform any necessary cleanup here
+		os.Exit(0)
+	}()
 
 	log.Println("All configured services started. Running indefinitely...")
 	wg.Wait() // Wait for all service goroutines to finish (they shouldn't in normal operation)
