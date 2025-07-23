@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"crypto/tls"
@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"go-forward/mux"
-	"go-forward/tools" // 确保导入 tools 包
 	"io"
 	"log"
 	"net"
@@ -15,12 +14,12 @@ import (
 )
 
 // --- Server Logic ---
-func runServer(controlAddr string, serverHost string) {
+func RunServer(controlAddr string, serverHost string) {
 	addr := controlAddr
 	if !strings.HasPrefix(addr, ":") {
 		addr = ":" + addr
 	}
-	certPEM, keyPEM := tools.GenerateSelfSignedCert(serverHost)
+	certPEM, keyPEM := GenerateSelfSignedCert(serverHost)
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		log.Fatalf("Failed to parse certificate: %v\n", err)
@@ -28,7 +27,7 @@ func runServer(controlAddr string, serverHost string) {
 
 	fmt.Printf("%s\n", base64.StdEncoding.EncodeToString([]byte(certPEM)))
 
-	tlsConfig, err := tools.NewServerTLSConfig(cert)
+	tlsConfig, err := NewServerTLSConfig(cert)
 	if err != nil {
 		log.Fatalf("Failed to create server TLS config: %v\n", err)
 	}
@@ -137,13 +136,13 @@ func listenPublic(session *mux.Session, publicAddr string) {
 
 		// Start proxying data between the public connection and the client stream
 		log.Printf("Starting proxy between %s <-> yamux stream for %s\n", publicConn.RemoteAddr(), session.RemoteAddr())
-		go proxy(publicConn, proxyStream)
+		go Proxy(publicConn, proxyStream)
 	}
 }
 
 // --- Client Logic ---
 
-func runClient(serverAddr, publicPort, localTargetAddr string, cert string) {
+func RunClient(serverAddr, publicPort, localTargetAddr string, cert string) {
 	log.Printf("Connecting to server %s\n", serverAddr)
 
 	caPool := x509.NewCertPool()
@@ -155,7 +154,7 @@ func runClient(serverAddr, publicPort, localTargetAddr string, cert string) {
 		log.Fatal("failed to append CA cert")
 	}
 
-	tlsConfig := tools.NewClientTLSConfig(caPool) // 使用 tools 包中的函数
+	tlsConfig := NewClientTLSConfig(caPool)
 
 	conn, err := tls.Dial("tcp", serverAddr, tlsConfig)
 	if err != nil {
@@ -214,10 +213,10 @@ func handleProxyStream(proxyStream net.Conn, localTargetAddr string) {
 
 	// Start proxying data between the server stream and the local connection
 	log.Printf("Starting proxy between yamux stream <-> local %s\n", localTargetAddr)
-	proxy(proxyStream, localConn)
+	Proxy(proxyStream, localConn)
 }
 
-func proxy(conn1 io.ReadWriteCloser, conn2 io.ReadWriteCloser) {
+func Proxy(conn1 io.ReadWriteCloser, conn2 io.ReadWriteCloser) {
 	var conn1Local, conn1Remote, conn2Local, conn2Remote string
 
 	if nc1, ok := conn1.(net.Conn); ok {

@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"fmt"
@@ -15,7 +15,7 @@ var maxConcurrentConns = 100
 var sem = make(chan struct{}, maxConcurrentConns)
 
 // Modified signature to accept username and password
-func local_socks_proxy(proxyListenAddr, username, password string) {
+func LocalSocksProxy(proxyListenAddr, username, password string) {
 	// Address parsing is now done in main.go
 	addr := proxyListenAddr
 
@@ -353,7 +353,7 @@ func handleSocks5Connection(clientConn net.Conn, serverUser, serverPass string) 
 	// --- 5. Proxy Data ---
 	log.Printf("Starting proxy between %s <-> %s\n", clientConn.RemoteAddr(), targetAddr)
 	// Assuming proxy function is defined elsewhere (e.g., reverse.go)
-	proxy(clientConn, targetConn)
+	Proxy(clientConn, targetConn)
 	log.Printf("Proxy finished between %s <-> %s\n", clientConn.RemoteAddr(), targetAddr)
 }
 

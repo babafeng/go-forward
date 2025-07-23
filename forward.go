@@ -1,11 +1,12 @@
 package main
 
 import (
+	"go-forward/tools"
 	"log"
 	"net"
 	"strconv" // Import strconv
 	"strings"
-	"sync" // Import sync
+	"sync"
 )
 
 // Modified to accept ForwardConfig struct
@@ -55,7 +56,7 @@ func handleTCPForward(cfg ForwardConfig) {
 
 				// Use the existing proxy/transfer function (assuming it's named 'proxy')
 				// If it's named 'transfer', use that instead. Let's assume 'proxy'.
-				proxy(client, remote) // Use the standard proxy function
+				tools.Proxy(client, remote) // Use the standard proxy function
 			}()
 		}
 	}
@@ -99,7 +100,7 @@ func listenAndForwardSinglePort(localPort int, cfg ForwardConfig) {
 				return
 			}
 			defer remote.Close()
-			proxy(client, remote)
+			tools.Proxy(client, remote)
 		}()
 	}
 }

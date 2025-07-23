@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"encoding/base64" // Import encoding/base64
@@ -11,7 +11,7 @@ import (
 )
 
 // Modified signature to accept username and password
-func local_http_proxy(listenAddr, username, password string) {
+func LocaHttpProxy(listenAddr, username, password string) {
 	if username != "" {
 		log.Printf("Starting HTTP proxy server on %s with authentication ENABLED", listenAddr)
 	} else {

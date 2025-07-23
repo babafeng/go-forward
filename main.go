@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go-forward/tools"
 	"log"
 	"net/url"
 	"os"
@@ -31,7 +32,9 @@ type ProxyConfig struct {
 	ListenAddr string
 	User       string
 	Pass       string
+	Server     string
 	IsHTTP     bool
+	IsHTTPS    bool
 }
 
 type ClientConfig struct {
@@ -84,7 +87,7 @@ func main() {
 		"  Rev Tunnel: publicPort//localTargetAddr (requires -F)\n"+
 		"  Forward:    listenPort//targetAddr (without -F)")
 	serverAddr := flag.String("F", "", "Server address (host:port) for reverse tunnel client mode")
-	serverHost := flag.String("H", "", "H is used to tls cert/hostname verification")
+	serverHost := flag.String("H", "127.0.0.1", "H is used to tls cert/hostname verification")
 	cert := flag.String("C", "", "H is used to tls cert/hostname verification")
 
 	flag.Parse()
@@ -103,14 +106,23 @@ func main() {
 	// Use a dedicated flag if server mode needs to run alongside others.
 
 	hasClientConfig := false // Track if any client config is found
+	isTLSProxies := false
 
 	for _, lVal := range lFlags {
-		isHttpProxy := false
-		// Check for proxy protocols
-		if strings.HasPrefix(lVal, "socks://") || strings.HasPrefix(lVal, "socks5://") || strings.HasPrefix(lVal, "http://") {
-			if strings.HasPrefix(lVal, "http://") {
-				isHttpProxy = true
+		prefixes := []string{"socks://", "socks5://", "http://", "https://"}
+		isProxies := false
+		for _, p := range prefixes {
+			if strings.HasPrefix(lVal, p) {
+				isProxies = true
+				break
 			}
+		}
+		isTLSProxies = strings.HasPrefix(lVal, "http://") && strings.HasPrefix(*serverAddr, "tls://")
+
+		if isProxies {
+			// Check for proxy protocols
+			isHttpProxy := strings.HasPrefix(lVal, "http://")
+			isHttpsProxy := strings.HasPrefix(lVal, "https://")
 			parsedURL, err := url.Parse(lVal)
 			if err != nil {
 				log.Printf("Error parsing proxy address %s: %v\n", lVal, err)
@@ -130,9 +142,11 @@ func main() {
 				ListenAddr: proxyListenAddr,
 				User:       proxyUser,
 				Pass:       proxyPass,
+				Server:     *serverHost,
 				IsHTTP:     isHttpProxy,
+				IsHTTPS:    isHttpsProxy,
 			})
-			log.Printf("Parsed Proxy Config: Listen=%s, Auth=%t, HTTP=%t\n", proxyListenAddr, proxyUser != "", isHttpProxy)
+			log.Printf("Parsed Proxy Config: Listen=%s, Auth=%t, HTTP=%t, HTTPS=%t\n", proxyListenAddr, proxyUser != "", isHttpProxy, isHttpsProxy)
 
 		} else if strings.Contains(lVal, "//") { // Check for client or forward mode
 			parts := strings.SplitN(lVal, "//", 2)
@@ -143,7 +157,7 @@ func main() {
 			localPart := parts[0]
 			targetPart := parts[1]
 
-			if *serverAddr != "" { // If -F is set, it's client (reverse tunnel) mode
+			if *serverAddr != "" { // If -F is set, it's client (reverse tunnel or tls proxy) mode
 				clients = append(clients, ClientConfig{
 					ServerAddr:      *serverAddr,
 					PublicPort:      localPart,
@@ -151,6 +165,7 @@ func main() {
 				})
 				hasClientConfig = true
 				log.Printf("Parsed Client Config: Server=%s, PublicPort=%s, LocalTarget=%s\n", *serverAddr, localPart, targetPart)
+
 			} else { // If -F is not set, it's forward mode (single or range)
 				isRange := strings.Contains(localPart, "-") && strings.Contains(targetPart, "-")
 				var fwdCfg ForwardConfig
@@ -223,7 +238,7 @@ func main() {
 		// It's already checked above, but double-checking logic might be useful.
 		return
 	}
-	if len(proxies) == 0 && len(clients) == 0 && len(forwards) == 0 && len(servers) == 0 {
+	if len(proxies)+len(clients)+len(forwards)+len(servers) == 0 {
 		log.Println("Error: No valid services were configured.")
 		return
 	}
@@ -236,10 +251,14 @@ func main() {
 		wg.Add(1)
 		go func(cfg ProxyConfig) {
 			defer wg.Done()
-			if cfg.IsHTTP {
-				local_http_proxy(cfg.ListenAddr, cfg.User, cfg.Pass)
+			if isTLSProxies {
+				tools.TlsClient(cfg.ListenAddr, *serverAddr, cfg.User, cfg.Pass, *cert)
+			} else if cfg.IsHTTPS {
+				tools.TlsProxy(cfg.ListenAddr, cfg.Server, cfg.User, cfg.Pass)
+			} else if cfg.IsHTTP {
+				tools.LocaHttpProxy(cfg.ListenAddr, cfg.User, cfg.Pass)
 			} else {
-				local_socks_proxy(cfg.ListenAddr, cfg.User, cfg.Pass)
+				tools.LocalSocksProxy(cfg.ListenAddr, cfg.User, cfg.Pass)
 			}
 		}(p)
 	}
@@ -258,7 +277,7 @@ func main() {
 		wg.Add(1)
 		go func(cfg ServerConfig) {
 			defer wg.Done()
-			runServer(cfg.PublicPort, cfg.ServerHost) // Pass the whole config struct
+			tools.RunServer(cfg.PublicPort, cfg.ServerHost) // Pass the whole config struct
 		}(f)
 	}
 
@@ -273,7 +292,7 @@ func main() {
 		go func(cfg ClientConfig) {
 			defer wg.Done()
 			// Note: runClient runs indefinitely until connection breaks
-			runClient(cfg.ServerAddr, cfg.PublicPort, cfg.LocalTargetAddr, *cert)
+			tools.RunClient(cfg.ServerAddr, cfg.PublicPort, cfg.LocalTargetAddr, *cert)
 			log.Printf("Reverse tunnel client (%s//%s) disconnected from server %s.\n", cfg.PublicPort, cfg.LocalTargetAddr, cfg.ServerAddr)
 		}(c)
 	}
@@ -304,6 +323,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  SOCKS5 Proxy (Auth): go-forward -L socks5://myuser:mypass@0.0.0.0:1080")
 	fmt.Fprintln(os.Stderr, "  HTTP Proxy (No Auth): go-forward -L http://0.0.0.0:8080")
 	fmt.Fprintln(os.Stderr, "  HTTP Proxy (Auth): go-forward -L http://myuser:mypass@0.0.0.0:8080")
+	fmt.Fprintln(os.Stderr, "  HTTPS Proxy (No Auth): go-forward -L https://0.0.0.0:8081")
+	fmt.Fprintln(os.Stderr, "  HTTPS Proxy (Auth): go-forward -L https://myuser:mypass@0.0.0.0:8081")
 	fmt.Fprintln(os.Stderr, "  Local Port Forward (Single): go-forward -L 9000//remote.host:80")
 	fmt.Fprintln(os.Stderr, "  Local Port Forward (Range): go-forward -L 1000-1005//target.host:3000-3005") // New example
 	fmt.Fprintln(os.Stderr, "  Combined Proxy + Reverse Tunnel:")

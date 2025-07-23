@@ -94,3 +94,9 @@ Taking macOS as an example, you can set an alias IP for the loopback address, su
 sudo ifconfig lo0 alias 10.0.0.2 up
 go-forward -L 2222//proxy.com:2222
 ```
+
+```bash
+go run . -L https://admin:admin@0.0.0.0:10000 -H 127.0.0.1
+go run . -L http://user:pass@0.0.0.0:1000 -F tls://admin:admin@127.0.0.1:10000 -C YOUR-CERT-TEXT
+
+```
