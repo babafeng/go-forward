@@ -55,17 +55,30 @@ func TlsClient(listenAddr, serverAddr, user, pass, cert string) {
 }
 
 // LocalHttpsProxy starts the HTTPS proxy server.
-func TlsProxy(listenAddr, serverHost, user, pass string) {
+func TlsProxy(listenAddr, serverHost, key, cert string) {
 	log.Printf("Starting HTTPS proxy on %s with hostname %s\n", listenAddr, serverHost)
 
-	certPEM, keyPEM := GenerateSelfSignedCert(serverHost)
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	fmt.Printf("Cert Pem: %s\n", base64.StdEncoding.EncodeToString([]byte(certPEM)))
+	var certPEM, keyPEM []byte
+	var err error
+	if key == "" || cert == "" {
+		certPEM, keyPEM = GenerateSelfSignedCert(serverHost)
+		fmt.Printf("Cert Pem: %s\n", base64.StdEncoding.EncodeToString([]byte(certPEM)))
+	} else {
+		keyPEM, err = base64.StdEncoding.DecodeString(key)
+		if err != nil {
+			log.Fatalf("Failed to decode base64 key: %v\n", err)
+		}
+		certPEM, err = base64.StdEncoding.DecodeString(cert)
+		if err != nil {
+			log.Fatalf("Failed to decode base64 cert: %v\n", err)
+		}
+	}
+	tlscert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		log.Fatalf("Failed to parse certificate: %v\n", err)
 	}
 
-	tlsConfig, err := NewServerTLSConfig(cert)
+	tlsConfig, err := NewServerTLSConfig(tlscert)
 	if err != nil {
 		log.Fatalf("Failed to create server TLS config: %v\n", err)
 	}

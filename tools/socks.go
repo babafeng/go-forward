@@ -353,7 +353,7 @@ func handleSocks5Connection(clientConn net.Conn, serverUser, serverPass string) 
 	// --- 5. Proxy Data ---
 	log.Printf("Starting proxy between %s <-> %s\n", clientConn.RemoteAddr(), targetAddr)
 	// Assuming proxy function is defined elsewhere (e.g., reverse.go)
-	Proxy(clientConn, targetConn)
+	TunnelCopy(clientConn, targetConn)
 	log.Printf("Proxy finished between %s <-> %s\n", clientConn.RemoteAddr(), targetAddr)
 }
 

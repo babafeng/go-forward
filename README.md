@@ -96,7 +96,10 @@ go-forward -L 2222//proxy.com:2222
 ```
 
 ```bash
-go run . -L https://admin:admin@0.0.0.0:10000 -H 127.0.0.1
+go run . -L tls://admin:admin@0.0.0.0:10000 -H 127.0.0.1
 go run . -L http://user:pass@0.0.0.0:1000 -F tls://admin:admin@127.0.0.1:10000 -C YOUR-CERT-TEXT
+
+
+go run . -L tls://0.0.0.0:1000 -H 0.0.0.0 -K aaa = -C aaa
 
 ```

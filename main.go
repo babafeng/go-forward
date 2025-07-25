@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"go-forward/tools"
@@ -34,7 +35,7 @@ type ProxyConfig struct {
 	Pass       string
 	Server     string
 	IsHTTP     bool
-	IsHTTPS    bool
+	IsTLS      bool
 }
 
 type ClientConfig struct {
@@ -49,16 +50,16 @@ type ServerConfig struct {
 }
 
 // Updated ForwardConfig for ranges
-type ForwardConfig struct {
-	ListenAddr      string // For single port listen (e.g., ":8080")
-	TargetAddr      string // For single port target (e.g., "host:80")
-	IsRange         bool
-	LocalStartPort  int
-	LocalEndPort    int
-	TargetHost      string
-	TargetStartPort int
-	TargetEndPort   int
-}
+// type ForwardConfig struct {
+// 	ListenAddr      string // For single port listen (e.g., ":8080")
+// 	TargetAddr      string // For single port target (e.g., "host:80")
+// 	IsRange         bool
+// 	LocalStartPort  int
+// 	LocalEndPort    int
+// 	TargetHost      string
+// 	TargetStartPort int
+// 	TargetEndPort   int
+// }
 
 // 添加辅助函数用于解析端口范围
 func parsePortRange(rangeStr, sep string) (int, int, error) {
@@ -88,9 +89,18 @@ func main() {
 		"  Forward:    listenPort//targetAddr (without -F)")
 	serverAddr := flag.String("F", "", "Server address (host:port) for reverse tunnel client mode")
 	serverHost := flag.String("H", "127.0.0.1", "H is used to tls cert/hostname verification")
-	cert := flag.String("C", "", "H is used to tls cert/hostname verification")
-
+	cert := flag.String("C", "", "C is used to specify the TLS certificate base64 string")
+	key := flag.String("K", "", "K is used to specify the TLS key base64 string")
+	genkey := flag.String("genkey", "", "gen key and cert for tls proxy, format: genkey=hostname")
 	flag.Parse()
+
+	if genkey != nil && *genkey != "" {
+		log.Printf("Generating key and cert for TLS proxy with hostname: %s\n", *genkey)
+		certPEM, keyPEM := tools.GenerateSelfSignedCert(*genkey)
+		fmt.Printf("Key Pem: %s\n", base64.StdEncoding.EncodeToString([]byte(keyPEM)))
+		fmt.Printf("Cert Pem: %s\n", base64.StdEncoding.EncodeToString([]byte(certPEM)))
+		return
+	}
 
 	if len(lFlags) == 0 {
 		log.Println("Error: At least one -L flag is required.")
@@ -100,7 +110,7 @@ func main() {
 
 	var proxies []ProxyConfig
 	var clients []ClientConfig
-	var forwards []ForwardConfig
+	var forwards []tools.ForwardConfig
 	var servers []ServerConfig
 	// Server mode is excluded in this multi-service setup for simplicity.
 	// Use a dedicated flag if server mode needs to run alongside others.
@@ -109,7 +119,7 @@ func main() {
 	isTLSProxies := false
 
 	for _, lVal := range lFlags {
-		prefixes := []string{"socks://", "socks5://", "http://", "https://"}
+		prefixes := []string{"socks://", "socks5://", "http://", "https://", "tls://"}
 		isProxies := false
 		for _, p := range prefixes {
 			if strings.HasPrefix(lVal, p) {
@@ -122,7 +132,7 @@ func main() {
 		if isProxies {
 			// Check for proxy protocols
 			isHttpProxy := strings.HasPrefix(lVal, "http://")
-			isHttpsProxy := strings.HasPrefix(lVal, "https://")
+			IsTLS := strings.HasPrefix(lVal, "tls://")
 			parsedURL, err := url.Parse(lVal)
 			if err != nil {
 				log.Printf("Error parsing proxy address %s: %v\n", lVal, err)
@@ -144,9 +154,9 @@ func main() {
 				Pass:       proxyPass,
 				Server:     *serverHost,
 				IsHTTP:     isHttpProxy,
-				IsHTTPS:    isHttpsProxy,
+				IsTLS:      IsTLS,
 			})
-			log.Printf("Parsed Proxy Config: Listen=%s, Auth=%t, HTTP=%t, HTTPS=%t\n", proxyListenAddr, proxyUser != "", isHttpProxy, isHttpsProxy)
+			log.Printf("Parsed Proxy Config: Listen=%s, Auth=%t, HTTP=%t, HTTPS=%t\n", proxyListenAddr, proxyUser != "", isHttpProxy, IsTLS)
 
 		} else if strings.Contains(lVal, "//") { // Check for client or forward mode
 			parts := strings.SplitN(lVal, "//", 2)
@@ -168,7 +178,7 @@ func main() {
 
 			} else { // If -F is not set, it's forward mode (single or range)
 				isRange := strings.Contains(localPart, "-") && strings.Contains(targetPart, "-")
-				var fwdCfg ForwardConfig
+				var fwdCfg tools.ForwardConfig
 				fwdCfg.IsRange = isRange
 
 				if isRange {
@@ -253,8 +263,8 @@ func main() {
 			defer wg.Done()
 			if isTLSProxies {
 				tools.TlsClient(cfg.ListenAddr, *serverAddr, cfg.User, cfg.Pass, *cert)
-			} else if cfg.IsHTTPS {
-				tools.TlsProxy(cfg.ListenAddr, cfg.Server, cfg.User, cfg.Pass)
+			} else if cfg.IsTLS {
+				tools.TlsProxy(cfg.ListenAddr, cfg.Server, *key, *cert)
 			} else if cfg.IsHTTP {
 				tools.LocaHttpProxy(cfg.ListenAddr, cfg.User, cfg.Pass)
 			} else {
@@ -266,9 +276,9 @@ func main() {
 	// Start Forwarders (handles both single and range)
 	for _, f := range forwards {
 		wg.Add(1)
-		go func(cfg ForwardConfig) {
+		go func(cfg tools.ForwardConfig) {
 			defer wg.Done()
-			handleTCPForward(cfg) // Pass the whole config struct
+			tools.HandleTCPForward(cfg) // Pass the whole config struct
 		}(f)
 	}
 
@@ -277,7 +287,7 @@ func main() {
 		wg.Add(1)
 		go func(cfg ServerConfig) {
 			defer wg.Done()
-			tools.RunServer(cfg.PublicPort, cfg.ServerHost) // Pass the whole config struct
+			tools.RunServer(cfg.PublicPort, cfg.ServerHost, *key, *cert) // Pass the whole config struct
 		}(f)
 	}
 

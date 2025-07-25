@@ -1,7 +1,6 @@
-package main
+package tools
 
 import (
-	"go-forward/tools"
 	"log"
 	"net"
 	"strconv" // Import strconv
@@ -9,11 +8,21 @@ import (
 	"sync"
 )
 
+type ForwardConfig struct {
+	ListenAddr      string // For single port listen (e.g., ":8080")
+	TargetAddr      string // For single port target (e.g., "host:80")
+	IsRange         bool
+	LocalStartPort  int
+	LocalEndPort    int
+	TargetHost      string
+	TargetStartPort int
+	TargetEndPort   int
+}
+
 // Modified to accept ForwardConfig struct
-func handleTCPForward(cfg ForwardConfig) {
+func HandleTCPForward(cfg ForwardConfig) {
 	if cfg.IsRange {
-		log.Printf("Starting TCP forwarder range: local %d-%d -> %s:%d-%d\n",
-			cfg.LocalStartPort, cfg.LocalEndPort, cfg.TargetHost, cfg.TargetStartPort, cfg.TargetEndPort)
+		log.Printf("Starting TCP forwarder range: local %d-%d -> %s:%d-%d\n", cfg.LocalStartPort, cfg.LocalEndPort, cfg.TargetHost, cfg.TargetStartPort, cfg.TargetEndPort)
 
 		var rangeWg sync.WaitGroup
 		for localPort := cfg.LocalStartPort; localPort <= cfg.LocalEndPort; localPort++ {
@@ -56,7 +65,7 @@ func handleTCPForward(cfg ForwardConfig) {
 
 				// Use the existing proxy/transfer function (assuming it's named 'proxy')
 				// If it's named 'transfer', use that instead. Let's assume 'proxy'.
-				tools.Proxy(client, remote) // Use the standard proxy function
+				TunnelCopy(client, remote) // Use the standard proxy function
 			}()
 		}
 	}
@@ -100,7 +109,7 @@ func listenAndForwardSinglePort(localPort int, cfg ForwardConfig) {
 				return
 			}
 			defer remote.Close()
-			tools.Proxy(client, remote)
+			TunnelCopy(client, remote)
 		}()
 	}
 }

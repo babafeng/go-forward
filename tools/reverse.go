@@ -14,20 +14,32 @@ import (
 )
 
 // --- Server Logic ---
-func RunServer(controlAddr string, serverHost string) {
+func RunServer(controlAddr, serverHost, key, cert string) {
 	addr := controlAddr
 	if !strings.HasPrefix(addr, ":") {
 		addr = ":" + addr
 	}
-	certPEM, keyPEM := GenerateSelfSignedCert(serverHost)
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	var certPEM, keyPEM []byte
+	var err error
+	if key == "" || cert == "" {
+		certPEM, keyPEM = GenerateSelfSignedCert(serverHost)
+		fmt.Printf("%s\n", base64.StdEncoding.EncodeToString([]byte(certPEM)))
+	} else {
+		keyPEM, err = base64.StdEncoding.DecodeString(key)
+		if err != nil {
+			log.Fatalf("Failed to decode base64 key: %v\n", err)
+		}
+		certPEM, err = base64.StdEncoding.DecodeString(cert)
+		if err != nil {
+			log.Fatalf("Failed to decode base64 cert: %v\n", err)
+		}
+	}
+	tlscert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		log.Fatalf("Failed to parse certificate: %v\n", err)
 	}
 
-	fmt.Printf("%s\n", base64.StdEncoding.EncodeToString([]byte(certPEM)))
-
-	tlsConfig, err := NewServerTLSConfig(cert)
+	tlsConfig, err := NewServerTLSConfig(tlscert)
 	if err != nil {
 		log.Fatalf("Failed to create server TLS config: %v\n", err)
 	}
@@ -136,7 +148,7 @@ func listenPublic(session *mux.Session, publicAddr string) {
 
 		// Start proxying data between the public connection and the client stream
 		log.Printf("Starting proxy between %s <-> yamux stream for %s\n", publicConn.RemoteAddr(), session.RemoteAddr())
-		go Proxy(publicConn, proxyStream)
+		go TunnelCopy(publicConn, proxyStream)
 	}
 }
 
@@ -213,10 +225,10 @@ func handleProxyStream(proxyStream net.Conn, localTargetAddr string) {
 
 	// Start proxying data between the server stream and the local connection
 	log.Printf("Starting proxy between yamux stream <-> local %s\n", localTargetAddr)
-	Proxy(proxyStream, localConn)
+	TunnelCopy(proxyStream, localConn)
 }
 
-func Proxy(conn1 io.ReadWriteCloser, conn2 io.ReadWriteCloser) {
+func TunnelCopy(conn1 io.ReadWriteCloser, conn2 io.ReadWriteCloser) {
 	var conn1Local, conn1Remote, conn2Local, conn2Remote string
 
 	if nc1, ok := conn1.(net.Conn); ok {
