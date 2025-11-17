@@ -114,13 +114,15 @@ func main() {
 		"  Proxy:      socks5://[user:pass@]host:port OR http://[user:pass@]host:port\n"+
 		"  Rev Tunnel: publicPort//localTargetAddr (requires -F)\n"+
 		"  Forward:    listenPort//targetAddr (without -F)")
+
 	serverAddr := flag.String("F", "", "Server address (host:port) for reverse tunnel client mode")
 	serverHost := flag.String("H", "127.0.0.1", "H is used to tls cert/hostname verification")
 	cert := flag.String("C", "", "C is used to specify the TLS certificate base64 string")
 	key := flag.String("K", "", "K is used to specify the TLS key base64 string")
 	genkey := flag.String("genkey", "", "gen key and cert for tls proxy, format: genkey=hostname")
 	socksMax := flag.Int("socks-max", 100, "Maximum concurrent SOCKS5 connections")
-	routeConfig := flag.String("R", "", "Enable router mode with the given proxy policy config file")
+	routeConfigPath := flag.String("R", "", "Enable router mode with the given proxy policy config file")
+	routeConfigSystemProxy := flag.Bool("enable-system-proxy", false, "Enable system proxy in router mode")
 	flag.Parse()
 
 	if genkey != nil && *genkey != "" {
@@ -131,7 +133,7 @@ func main() {
 		return
 	}
 
-	routeEnabled := *routeConfig != ""
+	routeEnabled := *routeConfigPath != ""
 
 	if len(lFlags) == 0 && !routeEnabled {
 		log.Println("Error: At least one -L flag is required.")
@@ -154,15 +156,20 @@ func main() {
 		wg       sync.WaitGroup
 	)
 
-	var routeCancel context.CancelFunc
+	var (
+		routeCancel context.CancelFunc
+		routeDone   chan struct{}
+	)
 	if routeEnabled {
 		routeCtx, cancel := context.WithCancel(context.Background())
 		routeCancel = cancel
-		cfgPath := *routeConfig
+		routeDone = make(chan struct{})
+		cfgPath := *routeConfigPath
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := route.Run(routeCtx, route.Options{ConfigPath: cfgPath}); err != nil {
+			defer close(routeDone)
+			if err := route.Run(routeCtx, route.Options{ConfigPath: cfgPath, SystemProxy: *routeConfigSystemProxy}); err != nil {
 				log.Fatalf("router mode failed: %v", err)
 			}
 		}()
@@ -383,6 +390,9 @@ func main() {
 		log.Printf("Received signal %s, exiting...", sig)
 		if routeCancel != nil {
 			routeCancel()
+		}
+		if routeDone != nil {
+			<-routeDone
 		}
 	case <-done:
 		log.Println("All services have stopped.")

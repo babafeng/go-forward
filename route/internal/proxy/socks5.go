@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"time"
@@ -35,7 +36,7 @@ func (s *SOCKS5Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen socks5: %w", err)
 	}
-	s.logger.Info("socks5 proxy listening", slog.String("addr", s.addr))
+	log.Printf("socks5 proxy listening: %s", s.addr)
 
 	go func() {
 		<-ctx.Done()
@@ -73,13 +74,13 @@ func (s *SOCKS5Server) handleConnection(ctx context.Context, conn net.Conn) {
 	reader := bufio.NewReader(conn)
 
 	if err := s.handleGreeting(reader, conn); err != nil {
-		s.logger.Debug("socks5 greeting failed", slog.Any("err", err))
+		log.Printf("socks5 read request failed: %v", err)
 		return
 	}
 
 	req, err := s.readRequest(reader)
 	if err != nil {
-		s.logger.Debug("socks5 read request failed", slog.Any("err", err))
+		log.Printf("socks5 read request failed: %v", err)
 		s.sendReply(conn, 0x01, "")
 		return
 	}
@@ -87,7 +88,7 @@ func (s *SOCKS5Server) handleConnection(ctx context.Context, conn net.Conn) {
 	snapshot := s.runtime.Load()
 	if snapshot == nil || snapshot.Router == nil {
 		s.sendReply(conn, 0x01, "")
-		s.logger.Error("socks runtime missing")
+		log.Printf("socks runtime missing")
 		return
 	}
 
@@ -106,7 +107,7 @@ func (s *SOCKS5Server) handleConnection(ctx context.Context, conn net.Conn) {
 	defer cancel()
 	targetConn, err := snapshot.Dialers.DialContext(dialCtx, upstreamName(decision), "tcp", target)
 	if err != nil {
-		s.logger.Debug("socks dial failed", slog.Any("err", err), slog.String("target", target))
+		log.Printf("socks dial failed: %s, %v", target, err)
 		s.sendReply(conn, 0x05, "")
 		return
 	}
@@ -210,8 +211,6 @@ func (s *SOCKS5Server) sendReply(conn net.Conn, rep byte, bindAddr string) error
 
 func (s *SOCKS5Server) logDecision(req *socksRequest, decision router.Decision) {
 	attrs := []any{
-		slog.String("proto", "socks5"),
-		slog.String("target", net.JoinHostPort(req.host, req.port)),
 		slog.String("action", decision.Action.String()),
 		slog.Bool("matched", decision.Matched),
 	}
@@ -225,7 +224,8 @@ func (s *SOCKS5Server) logDecision(req *socksRequest, decision router.Decision) 
 			slog.Int("rule_index", decision.Rule.Index),
 		)
 	}
-	s.logger.Info("routing", attrs...)
+	log.Printf("routing: %v", attrs)
+	log.Printf("routing: socks5 --> %v %v", net.JoinHostPort(req.host, req.port), attrs)
 }
 
 type socksRequest struct {

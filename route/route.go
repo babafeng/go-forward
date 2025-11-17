@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"strings"
@@ -19,9 +20,10 @@ import (
 )
 
 type Options struct {
-	ConfigPath string
-	HTTPAddr   string
-	SOCKS5Addr string
+	ConfigPath  string
+	SystemProxy bool
+	HTTPAddr    string
+	SOCKS5Addr  string
 }
 
 func watchConfig(ctx context.Context, watcher *config.Watcher, store *runtime.Store, levelVar *slog.LevelVar, logger *slog.Logger, listenCfg config.ListenConfig, httpProxyMgr, socks5ProxyMgr *systemproxy.Manager) error {
@@ -35,29 +37,29 @@ func watchConfig(ctx context.Context, watcher *config.Watcher, store *runtime.St
 				continue
 			}
 			if cfg.Listen != currentListen {
-				logger.Warn("listen address changes require restart", slog.String("current_http", currentListen.HTTP), slog.String("new_http", cfg.Listen.HTTP), slog.String("current_socks5", currentListen.SOCKS5), slog.String("new_socks5", cfg.Listen.SOCKS5))
+				log.Printf("listen address changes require restart: current_http=%s, new_http=%s, current_socks5=%s, new_socks5=%s", currentListen.HTTP, cfg.Listen.HTTP, currentListen.SOCKS5, cfg.Listen.SOCKS5)
 				cfg.Listen = currentListen
 			}
 			snapshot, err := buildSnapshot(cfg)
 			if err != nil {
-				logger.Error("failed to rebuild runtime", slog.Any("err", err))
+				log.Printf("failed to rebuild runtime: %v", err)
 				continue
 			}
 			store.Update(snapshot)
 			if httpProxyMgr != nil {
 				if err := httpProxyMgr.Update(cfg.General.SkipProxy, logger); err != nil {
-					logger.Warn("failed to refresh HTTP system proxy bypass", slog.Any("err", err))
+					log.Printf("failed to refresh HTTP system proxy bypass: %v", err)
 				}
 			}
 			if socks5ProxyMgr != nil {
 				if err := socks5ProxyMgr.Update(cfg.General.SkipProxy, logger); err != nil {
-					logger.Warn("failed to refresh SOCKS5 system proxy bypass", slog.Any("err", err))
+					log.Printf("failed to refresh SOCKS5 system proxy bypass: %v", err)
 				}
 			}
 			levelVar.Set(parseLogLevel(cfg.Log.Level))
-			logger.Info("configuration reloaded")
+			log.Printf("configuration reloaded")
 		case err := <-watcher.Errors():
-			logger.Error("config watch error", slog.Any("err", err))
+			log.Printf("config watch error: %v", err)
 		}
 	}
 }
@@ -82,6 +84,7 @@ func newLogger(level *slog.LevelVar, format string) *slog.Logger {
 	if strings.EqualFold(format, "json") {
 		return slog.New(slog.NewJSONHandler(os.Stdout, handlerOpts))
 	}
+	// return slog.New(newStdTextHandler(os.Stdout, handlerOpts))
 	return slog.New(slog.NewTextHandler(os.Stdout, handlerOpts))
 }
 
@@ -122,6 +125,7 @@ func buildSnapshot(cfg *config.Config) (*runtime.Snapshot, error) {
 
 func Run(ctx context.Context, opts Options) error {
 	configPath := opts.ConfigPath
+	isEnableSystemProxy := opts.SystemProxy
 	if configPath == "" {
 		configPath = "~/proxy-policy.conf"
 	}
@@ -142,44 +146,49 @@ func Run(ctx context.Context, opts Options) error {
 	levelVar.Set(parseLogLevel(cfg.Log.Level))
 	logger := newLogger(levelVar, cfg.Log.Format)
 
-	// var proxyMgr *systemproxy.Manager
-	// if cfg.Listen.HTTP != "" {
-	// 	mgr, err := systemproxy.Enable(cfg.Listen.HTTP, cfg.General.SkipProxy, logger)
-	// 	if err != nil {
-	// 		logger.Warn("failed to enable system proxy", slog.Any("err", err))
-	// 	} else {
-	// 		proxyMgr = mgr
-	// 		defer func() {
-	// 			if err := proxyMgr.Disable(logger); err != nil {
-	// 				logger.Warn("failed to disable system proxy", slog.Any("err", err))
-	// 			}
-	// 		}()
-	// 	}
-	// }
+	if isEnableSystemProxy {
+		var proxyMgr *systemproxy.Manager
+		if cfg.Listen.HTTP != "" {
+			log.Printf("enabling system HTTP proxy: %s", cfg.Listen.HTTP)
+			mgr, err := systemproxy.Enable(cfg.Listen.HTTP, cfg.General.SkipProxy, logger)
+			if err != nil {
+				log.Printf("failed to enable system proxy: %v", err)
+			} else {
+				proxyMgr = mgr
+				defer func() {
+					if err := proxyMgr.Disable(logger); err != nil {
+						log.Printf("failed to disable system proxy: %v", err)
+					}
+				}()
+			}
+		}
 
-	// var socks5ProxyMgr *systemproxy.Manager
-	// if cfg.Listen.SOCKS5 != "" {
-	// 	mgr, err := systemproxy.EnableSOCKS5(cfg.Listen.SOCKS5, cfg.General.SkipProxy, logger)
-	// 	if err != nil {
-	// 		logger.Warn("failed to enable SOCKS5 system proxy", slog.Any("err", err))
-	// 	} else {
-	// 		socks5ProxyMgr = mgr
-	// 		defer func() {
-	// 			if err := socks5ProxyMgr.Disable(logger); err != nil {
-	// 				logger.Warn("failed to disable SOCKS5 system proxy", slog.Any("err", err))
-	// 			}
-	// 		}()
-	// 	}
-	// }
+		var socks5ProxyMgr *systemproxy.Manager
+		if cfg.Listen.SOCKS5 != "" {
+			log.Printf("enabling system SOCKS5 proxy: %s", cfg.Listen.SOCKS5)
+			mgr, err := systemproxy.EnableSOCKS5(cfg.Listen.SOCKS5, cfg.General.SkipProxy, logger)
+			if err != nil {
+				log.Printf("failed to enable SOCKS5 system proxy: %v", err)
+			} else {
+				socks5ProxyMgr = mgr
+				defer func() {
+					if err := socks5ProxyMgr.Disable(logger); err != nil {
+						log.Printf("failed to disable SOCKS5 system proxy: %v", err)
+					}
+				}()
+			}
+		}
+
+	}
 
 	snapshot, err := buildSnapshot(cfg)
 	if err != nil {
-		logger.Error("unable to build runtime", slog.Any("err", err))
+		log.Printf("unable to build runtime: %v", err)
 		return err
 	}
 	store := runtime.NewStore(snapshot)
 
-	logger.Info("configuration loaded", slog.String("http", cfg.Listen.HTTP), slog.String("socks5", cfg.Listen.SOCKS5))
+	log.Printf("configuration loaded: http=%s, socks5=%s", cfg.Listen.HTTP, cfg.Listen.SOCKS5)
 
 	group, ctx := errgroup.WithContext(ctx)
 
@@ -194,7 +203,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	watcher, err := config.NewWatcher(configPath)
 	if err != nil {
-		logger.Warn("config hot reload disabled", slog.Any("err", err))
+		log.Printf("config hot reload disabled: %v", err)
 	} else {
 		defer watcher.Close()
 		group.Go(func() error {
@@ -203,11 +212,11 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	if err := group.Wait(); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Error("proxy terminated with error", slog.Any("err", err))
+		log.Printf("proxy terminated with error: %v", err)
 		return err
 	}
 
-	logger.Info("proxy shutdown complete")
+	log.Printf("proxy shutdown complete")
 	return nil
 }
 

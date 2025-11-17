@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -35,7 +36,7 @@ func (s *HTTPServer) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen http proxy: %w", err)
 	}
-	s.logger.Info("http proxy listening", slog.String("addr", s.addr))
+	log.Printf("http proxy listening: %s", s.addr)
 
 	go func() {
 		<-ctx.Done()
@@ -77,7 +78,7 @@ func (s *HTTPServer) handleConnection(ctx context.Context, conn net.Conn) {
 	req, err := http.ReadRequest(reader)
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
-			s.logger.Debug("failed to read http request", slog.Any("err", err), slog.String("remote", remoteAddr))
+			log.Printf("failed to read http request from %s: %v", remoteAddr, err)
 		}
 		conn.Close()
 		return
@@ -87,7 +88,7 @@ func (s *HTTPServer) handleConnection(ctx context.Context, conn net.Conn) {
 	snapshot := s.runtime.Load()
 	if snapshot == nil || snapshot.Router == nil {
 		respondError(conn, http.StatusServiceUnavailable, "runtime not ready")
-		s.logger.Error("http runtime missing", slog.String("remote", remoteAddr))
+		log.Printf("http runtime missing: %s", remoteAddr)
 		return
 	}
 
@@ -103,7 +104,7 @@ func (s *HTTPServer) handleConnect(ctx context.Context, client net.Conn, req *ht
 	host := req.Host
 	if host == "" {
 		respondError(client, http.StatusBadRequest, "missing host")
-		s.logger.Warn("connect without host", slog.String("remote", remoteAddr))
+		log.Printf("connect without host: %s", remoteAddr)
 		return
 	}
 	domain, port := splitHostPort(host, "443")
@@ -123,7 +124,7 @@ func (s *HTTPServer) handleConnect(ctx context.Context, client net.Conn, req *ht
 	if err != nil {
 		s.logDecision("http-connect", domain, port, decision, remoteAddr, start, err)
 		respondError(client, http.StatusBadGateway, "upstream error")
-		s.logger.Warn("connect dial failed", slog.String("host", target), slog.Any("err", err))
+		log.Printf("connect dial failed: %s, %v", target, err)
 		return
 	}
 	s.logDecision("http-connect", domain, port, decision, remoteAddr, start, nil)
@@ -140,7 +141,7 @@ func (s *HTTPServer) handleForward(ctx context.Context, client net.Conn, req *ht
 	}
 	if host == "" {
 		respondError(client, http.StatusBadRequest, "missing host")
-		s.logger.Warn("http request missing host", slog.String("remote", remoteAddr))
+		log.Printf("http request missing host: %s", remoteAddr)
 		return
 	}
 
@@ -164,7 +165,7 @@ func (s *HTTPServer) handleForward(ctx context.Context, client net.Conn, req *ht
 	if err != nil {
 		s.logDecision("http", domain, port, decision, remoteAddr, start, err)
 		respondError(client, http.StatusBadGateway, "upstream error")
-		s.logger.Warn("forward dial failed", slog.String("host", target), slog.Any("err", err))
+		log.Printf("forward dial failed: %s, %v", target, err)
 		return
 	}
 	defer targetConn.Close()
@@ -173,14 +174,14 @@ func (s *HTTPServer) handleForward(ctx context.Context, client net.Conn, req *ht
 	prepareRequestForForward(req)
 
 	if err := req.Write(targetConn); err != nil {
-		s.logger.Warn("write request failed", slog.Any("err", err))
+		log.Printf("write request failed: %v", err)
 		respondError(client, http.StatusBadGateway, "write error")
 		return
 	}
 
 	if _, err := io.Copy(client, targetConn); err != nil {
 		if !errors.Is(err, io.EOF) {
-			s.logger.Debug("copy http response failed", slog.Any("err", err))
+			log.Printf("copy http response failed: %v", err)
 		}
 	}
 }
@@ -225,9 +226,6 @@ func splitHostPort(host, defaultPort string) (string, string) {
 
 func (s *HTTPServer) logDecision(proto, domain, port string, decision router.Decision, remote string, start time.Time, err error) {
 	attrs := []any{
-		slog.String("proto", proto),
-		slog.String("remote", remote),
-		slog.String("target", net.JoinHostPort(domain, port)),
 		slog.String("action", decision.Action.String()),
 		slog.Bool("matched", decision.Matched),
 		slog.Duration("latency", time.Since(start)),
@@ -244,12 +242,8 @@ func (s *HTTPServer) logDecision(proto, domain, port string, decision router.Dec
 	}
 	if err != nil {
 		attrs = append(attrs, slog.Any("err", err))
-		if decision.Action == router.ActionReject {
-			s.logger.Info("routing", attrs...)
-		} else {
-			s.logger.Error("routing", attrs...)
-		}
+		log.Printf("routing: %v", attrs)
 		return
 	}
-	s.logger.Info("routing", attrs...)
+	log.Printf("routing: %v %v --> %v %v", proto, remote, net.JoinHostPort(domain, port), attrs)
 }

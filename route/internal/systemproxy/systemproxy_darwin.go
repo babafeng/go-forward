@@ -5,6 +5,7 @@ package systemproxy
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net"
 	"os/exec"
 	"strings"
@@ -89,12 +90,12 @@ func (m *Manager) Update(bypass []string, logger *slog.Logger) error {
 				firstErr = err
 			}
 			if logger != nil {
-				logger.Warn("failed to update proxy bypass domains", slog.String("service", service), slog.Any("err", err))
+				log.Println("failed to update proxy bypass domains", service, err)
 			}
 		}
 	}
 	if firstErr == nil && logger != nil {
-		logger.Info("system proxy bypass domains updated", slog.Any("domains", m.bypass))
+		log.Println("system proxy bypass domains updated", m.bypass)
 	}
 	return firstErr
 }
@@ -125,9 +126,9 @@ func (m *Manager) apply(enable bool, logger *slog.Logger) error {
 			}
 			if logger != nil {
 				if enable {
-					logger.Warn("failed to configure system proxy", slog.String("service", service), slog.Any("err", err))
+					log.Println("failed to configure system proxy", service, err)
 				} else {
-					logger.Error("failed to disable system proxy", slog.String("service", service), slog.Any("err", err))
+					log.Println("failed to disable system proxy", service, err)
 				}
 			}
 			continue
@@ -140,9 +141,9 @@ func (m *Manager) apply(enable bool, logger *slog.Logger) error {
 			if m.proxyType == ProxyTypeSOCKS5 {
 				proxyTypeName = "SOCKS5"
 			}
-			logger.Info("system proxy enabled", slog.String("type", proxyTypeName), slog.String("host", m.host), slog.String("port", m.port), slog.Int("services", success))
+			log.Println("system proxy enabled", proxyTypeName, m.host, m.port)
 		} else {
-			logger.Info("system proxy disabled", slog.Int("services", success))
+			log.Println("system proxy disabled")
 		}
 	}
 	return firstErr
