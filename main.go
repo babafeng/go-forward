@@ -92,6 +92,7 @@ func main() {
 	cert := flag.String("C", "", "C is used to specify the TLS certificate base64 string")
 	key := flag.String("K", "", "K is used to specify the TLS key base64 string")
 	genkey := flag.String("genkey", "", "gen key and cert for tls proxy, format: genkey=hostname")
+	socksMax := flag.Int("socks-max", 100, "Maximum concurrent SOCKS5 connections")
 	flag.Parse()
 
 	if genkey != nil && *genkey != "" {
@@ -107,6 +108,13 @@ func main() {
 		printUsage()
 		return
 	}
+
+	if *serverAddr != "" && *cert == "" {
+		log.Println("Error: -C <base64_cert> is required when using reverse tunnel client mode (-F)")
+		return
+	}
+
+	tools.SetSocksConcurrencyLimit(*socksMax)
 
 	var proxies []ProxyConfig
 	var clients []ClientConfig

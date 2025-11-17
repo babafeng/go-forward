@@ -14,6 +14,15 @@ import (
 var maxConcurrentConns = 100
 var sem = make(chan struct{}, maxConcurrentConns)
 
+func SetSocksConcurrencyLimit(limit int) {
+	if limit <= 0 {
+		limit = 1
+	}
+	maxConcurrentConns = limit
+	sem = make(chan struct{}, maxConcurrentConns)
+	log.Printf("SOCKS5 concurrency limit set to %d", maxConcurrentConns)
+}
+
 // Modified signature to accept username and password
 func LocalSocksProxy(proxyListenAddr, username, password string) {
 	// Address parsing is now done in main.go

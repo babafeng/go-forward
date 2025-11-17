@@ -95,21 +95,10 @@ func copyHeaders(dst, src http.Header) {
 	}
 }
 
-func tunnel(dst net.Conn, src net.Conn) {
-	// 使用预分配缓冲区来减少内存分配
-	buf := make([]byte, 32*1024)
-	defer dst.Close()
-	defer src.Close()
-	written, err := io.CopyBuffer(dst, src, buf)
-	if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-		log.Printf("Tunnel error: %v", err)
-	}
-	log.Printf("Tunnel transferred %d bytes from %s to %s", written, src.RemoteAddr(), dst.RemoteAddr())
-}
-
 func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("HTTP: %s %s", r.Method, r.URL)
-	resp, err := http.DefaultTransport.RoundTrip(r)
+	req := sanitizeProxyRequest(r)
+	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
@@ -118,6 +107,45 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+var hopByHopHeaders = []string{
+	"Connection",
+	"Proxy-Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+func sanitizeProxyRequest(r *http.Request) *http.Request {
+	req := r.Clone(r.Context())
+	req.RequestURI = ""
+	if req.URL.Scheme == "" {
+		req.URL.Scheme = "http"
+	}
+	if req.URL.Host == "" {
+		req.URL.Host = req.Host
+	}
+	stripHopHeaders(req.Header)
+	return req
+}
+
+func stripHopHeaders(headers http.Header) {
+	for _, h := range hopByHopHeaders {
+		headers.Del(h)
+	}
+	if connectionVals, ok := headers["Connection"]; ok {
+		for _, v := range connectionVals {
+			for _, token := range strings.Split(v, ",") {
+				headers.Del(strings.TrimSpace(token))
+			}
+		}
+	}
+	headers.Del("Connection")
 }
 
 func handleHTTPS(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +166,5 @@ func handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	go tunnel(destConn, clientConn)
-	go tunnel(clientConn, destConn)
+	TunnelCopy(clientConn, destConn)
 }

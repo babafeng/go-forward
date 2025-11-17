@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 )
 
@@ -137,6 +136,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 处理 HTTPS 的 CONNECT 请求
 	if r.Method == http.MethodConnect {
+		forwardedReq := cloneProxyRequest(r)
 		// 劫持连接以获取底层的 TCP 连接
 		hijacker, ok := w.(http.Hijacker)
 		if !ok {
@@ -152,51 +152,20 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer clientConn.Close()
 
-		// 将原始的 CONNECT 请求转发给远程服务
-		// 注意：这里我们不能简单地 r.Write(remoteConn)，因为那会包含 Host 头部，
-		// 对于 CONNECT 请求，我们只需要 Host 在请求行中。
-		// 但对于这个场景，直接 Write 也可以工作。
-		err = r.Write(remoteConn)
-		if err != nil {
+		if err := forwardedReq.Write(remoteConn); err != nil {
 			log.Printf("Failed to forward the CONNECT request to the remote service: %v", err)
 			return
 		}
-
-		// 在两个连接之间双向转发数据
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			io.Copy(clientConn, remoteConn)
-		}()
-		go func() {
-			defer wg.Done()
-			io.Copy(remoteConn, clientConn)
-		}()
-		wg.Wait()
-
+		TunnelCopy(clientConn, remoteConn)
 	} else {
-		// 处理普通的 HTTP 请求
-		// 对于标准的 HTTP 代理请求，我们不应该修改请求。
-		// 原始请求中包含了完整的 URL (例如 GET http://google.com/ HTTP/1.1)，
-		// 我们需要将它原封不动地转发给远程服务器。
-		// 下面被注释掉的代码是导致错误的原因。
-		/*
-			r.RequestURI = ""
-			r.Header.Del("Proxy-Connection")
-			r.Header.Del("Connection")
-		*/
-
-		// 将请求直接转发到远程服务
-		err := r.Write(remoteConn)
-		if err != nil {
+		forwardedReq := cloneProxyRequest(r)
+		if err := forwardedReq.Write(remoteConn); err != nil {
 			log.Printf("Failed to forward HTTP request to remote service: %v", err)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 
-		// 将远程服务的响应复制回原始的 http.ResponseWriter
-		resp, err := http.ReadResponse(bufio.NewReader(remoteConn), r)
+		resp, err := http.ReadResponse(bufio.NewReader(remoteConn), forwardedReq)
 		if err != nil {
 			log.Printf("Failed to read response from remote service: %v", err)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -204,38 +173,18 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer resp.Body.Close()
 
-		// 复制响应头
+		stripHopHeaders(resp.Header)
 		for key, values := range resp.Header {
 			for _, value := range values {
 				w.Header().Add(key, value)
 			}
 		}
-		// 写入响应状态码
 		w.WriteHeader(resp.StatusCode)
-		// 复制响应体
 		io.Copy(w, resp.Body)
 	}
 }
 
 // handleTunneling 在两个连接之间双向转发数据
-func handleTunneling(clientConn, destConn net.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		io.Copy(destConn, clientConn)
-		destConn.Close()
-	}()
-	go func() {
-		defer wg.Done()
-		io.Copy(clientConn, destConn)
-		clientConn.Close()
-	}()
-
-	wg.Wait()
-}
-
 // handleHTTP 处理普通的 HTTP 请求
 func handleHttpRequest(clientConn net.Conn, req *http.Request) {
 	req.URL.Scheme = "http"
@@ -288,7 +237,7 @@ func handleProxyRequest(clientConn net.Conn) {
 		// 通知客户端连接已建立
 		clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
 		// 开始隧道转发
-		handleTunneling(clientConn, destConn)
+		TunnelCopy(clientConn, destConn)
 	} else {
 		// HTTP 流量
 		log.Printf("HTTP: Establishing tunnel to %s", req.Host)
@@ -330,4 +279,10 @@ func parseBasicAuth(auth string) (username, password string, ok bool) {
 		}
 	}
 	return
+}
+
+func cloneProxyRequest(r *http.Request) *http.Request {
+	req := r.Clone(r.Context())
+	stripHopHeaders(req.Header)
+	return req
 }

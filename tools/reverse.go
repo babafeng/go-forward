@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 // --- Server Logic ---
@@ -155,8 +156,7 @@ func listenPublic(session *mux.Session, publicAddr string) {
 // --- Client Logic ---
 
 func RunClient(serverAddr, publicPort, localTargetAddr string, cert string) {
-	log.Printf("Connecting to server %s\n", serverAddr)
-
+	log.Printf("Reverse tunnel client starting, remote=%s", serverAddr)
 	caPool := x509.NewCertPool()
 	certBytes, err := base64.StdEncoding.DecodeString(cert)
 	if err != nil {
@@ -167,48 +167,60 @@ func RunClient(serverAddr, publicPort, localTargetAddr string, cert string) {
 	}
 
 	tlsConfig := NewClientTLSConfig(caPool)
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
 
+	for {
+		if err := runClientSession(serverAddr, publicPort, localTargetAddr, tlsConfig); err != nil {
+			log.Printf("Reverse tunnel client error: %v", err)
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		} else {
+			log.Printf("Reverse tunnel client session closed, reconnecting")
+			backoff = time.Second
+		}
+		log.Printf("Reconnecting in %s", backoff)
+		time.Sleep(backoff)
+	}
+}
+
+func runClientSession(serverAddr, publicPort, localTargetAddr string, tlsConfig *tls.Config) error {
 	conn, err := tls.Dial("tcp", serverAddr, tlsConfig)
 	if err != nil {
-		log.Fatalf("Failed to connect to server %s: %v\n", serverAddr, err)
+		return fmt.Errorf("failed to connect to server %s: %w", serverAddr, err)
 	}
-	log.Printf("Connected to server %s\n", serverAddr)
+	log.Printf("Connected to server %s", serverAddr)
+	defer conn.Close()
 
-	// Create yamux client session
 	session, err := mux.Client(conn, nil)
 	if err != nil {
-		log.Fatalf("Failed to create yamux client session: %v\n", err)
+		return fmt.Errorf("failed to create yamux client session: %w", err)
 	}
 	defer session.Close()
 	log.Println("Yamux client session established")
 
-	// Open a control stream to send the listen request
 	controlStream, err := session.Open()
 	if err != nil {
-		log.Fatalf("Failed to open control stream: %v\n", err)
+		return fmt.Errorf("failed to open control stream: %w", err)
 	}
 
-	// Send the listen request
 	request := fmt.Sprintf("LISTEN %s", publicPort)
-	_, err = controlStream.Write([]byte(request))
-	if err != nil {
+	if _, err = controlStream.Write([]byte(request)); err != nil {
 		controlStream.Close()
-		log.Fatalf("Failed to send LISTEN request: %v\n", err)
+		return fmt.Errorf("failed to send LISTEN request: %w", err)
 	}
-	controlStream.Close() // Close the stream after sending
-	log.Printf("Sent request to server: %s\n", request)
+	controlStream.Close()
+	log.Printf("Sent request to server: %s", request)
 
-	// Wait for the server to open streams for incoming public connections
 	log.Println("Waiting for incoming proxy connections from server...")
 	for {
 		proxyStream, err := session.Accept()
 		if err != nil {
-			log.Printf("Failed to accept stream from server: %v. Exiting.\n", err)
-			break // Session likely closed
+			return fmt.Errorf("session accept error: %w", err)
 		}
-		log.Printf("Accepted incoming proxy stream from server %s\n", session.RemoteAddr())
-
-		// Handle the incoming proxy stream in a goroutine
+		log.Printf("Accepted incoming proxy stream from server %s", session.RemoteAddr())
 		go handleProxyStream(proxyStream, localTargetAddr)
 	}
 }
