@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"go-forward/route"
 	"go-forward/tools"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -13,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -78,6 +82,29 @@ func parsePortRange(rangeStr, sep string) (int, int, error) {
 	return start, end, nil
 }
 
+func requiresPrivilegedPort(addr string) bool {
+	port, err := extractPort(addr)
+	if err != nil {
+		return false
+	}
+	return port > 0 && port < 1024
+}
+
+func extractPort(addr string) (int, error) {
+	if !strings.Contains(addr, ":") {
+		return 0, fmt.Errorf("address %s missing port", addr)
+	}
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		if strings.HasPrefix(addr, ":") {
+			portStr = strings.TrimPrefix(addr, ":")
+		} else {
+			return 0, err
+		}
+	}
+	return strconv.Atoi(portStr)
+}
+
 // --- Main Function ---
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -93,6 +120,7 @@ func main() {
 	key := flag.String("K", "", "K is used to specify the TLS key base64 string")
 	genkey := flag.String("genkey", "", "gen key and cert for tls proxy, format: genkey=hostname")
 	socksMax := flag.Int("socks-max", 100, "Maximum concurrent SOCKS5 connections")
+	routeConfig := flag.String("R", "", "Enable router mode with the given proxy policy config file")
 	flag.Parse()
 
 	if genkey != nil && *genkey != "" {
@@ -103,7 +131,9 @@ func main() {
 		return
 	}
 
-	if len(lFlags) == 0 {
+	routeEnabled := *routeConfig != ""
+
+	if len(lFlags) == 0 && !routeEnabled {
 		log.Println("Error: At least one -L flag is required.")
 		printUsage()
 		return
@@ -116,10 +146,27 @@ func main() {
 
 	tools.SetSocksConcurrencyLimit(*socksMax)
 
-	var proxies []ProxyConfig
-	var clients []ClientConfig
-	var forwards []tools.ForwardConfig
-	var servers []ServerConfig
+	var (
+		proxies  []ProxyConfig
+		clients  []ClientConfig
+		forwards []tools.ForwardConfig
+		servers  []ServerConfig
+		wg       sync.WaitGroup
+	)
+
+	var routeCancel context.CancelFunc
+	if routeEnabled {
+		routeCtx, cancel := context.WithCancel(context.Background())
+		routeCancel = cancel
+		cfgPath := *routeConfig
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := route.Run(routeCtx, route.Options{ConfigPath: cfgPath}); err != nil {
+				log.Fatalf("router mode failed: %v", err)
+			}
+		}()
+	}
 	// Server mode is excluded in this multi-service setup for simplicity.
 	// Use a dedicated flag if server mode needs to run alongside others.
 
@@ -155,6 +202,10 @@ func main() {
 			if parsedURL.User != nil {
 				proxyUser = parsedURL.User.Username()
 				proxyPass, _ = parsedURL.User.Password()
+			}
+
+			if requiresPrivilegedPort(proxyListenAddr) && !isCurrentUserPrivileged() {
+				log.Fatalf("port %s requires elevated privileges; please use sudo or choose a port >= 1024", proxyListenAddr)
 			}
 			proxies = append(proxies, ProxyConfig{
 				ListenAddr: proxyListenAddr,
@@ -257,12 +308,13 @@ func main() {
 		return
 	}
 	if len(proxies)+len(clients)+len(forwards)+len(servers) == 0 {
-		log.Println("Error: No valid services were configured.")
-		return
+		if routeEnabled {
+			log.Println("Router mode enabled without local services; running route only.")
+		} else {
+			log.Println("Error: No valid services were configured.")
+			return
+		}
 	}
-
-	// --- Start Services ---
-	var wg sync.WaitGroup
 
 	// Start Proxies
 	for _, p := range proxies {
@@ -315,19 +367,26 @@ func main() {
 		}(c)
 	}
 
-	// Graceful shutdown on interrupt signal
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+
+	done := make(chan struct{})
 	go func() {
-		<-sigChan
-		log.Println("Received interrupt signal, exiting...")
-		// Perform any necessary cleanup here
-		os.Exit(0)
+		wg.Wait()
+		close(done)
 	}()
 
 	log.Println("All configured services started. Running indefinitely...")
-	wg.Wait() // Wait for all service goroutines to finish (they shouldn't in normal operation)
-	log.Println("All services have stopped.")
+	select {
+	case sig := <-sigChan:
+		log.Printf("Received signal %s, exiting...", sig)
+		if routeCancel != nil {
+			routeCancel()
+		}
+	case <-done:
+		log.Println("All services have stopped.")
+	}
 }
 
 func printUsage() {
@@ -345,6 +404,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  HTTPS Proxy (Auth): go-forward -L https://myuser:mypass@0.0.0.0:8081")
 	fmt.Fprintln(os.Stderr, "  Local Port Forward (Single): go-forward -L 9000//remote.host:80")
 	fmt.Fprintln(os.Stderr, "  Local Port Forward (Range): go-forward -L 1000-1005//target.host:3000-3005") // New example
+	fmt.Fprintln(os.Stderr, "  Router Mode: go-forward -R /path/to/proxy-policy.conf")
 	fmt.Fprintln(os.Stderr, "  Combined Proxy + Reverse Tunnel:")
 	fmt.Fprintln(os.Stderr, "    go-forward -L http://0.0.0.0:8080 -L 2020//127.0.0.1:8080 -F tunnel.server.com:7000")
 }

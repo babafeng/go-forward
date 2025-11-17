@@ -27,7 +27,7 @@ LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJiekNDQVJTZ0F3SUJBZ0lRZDJzb1ZxWTFJWDBp
 Client
 
 ```bash
-go-forward -L 1000//127.0.0.1:1080 -F your.server.com:7000 -C YOUR-CERT-TEXT
+go-forward -L http://127.0.0.1:1080 -L 1000//127.0.0.1:1080 -F your.server.com:7000 -C YOUR-CERT-TEXT
 ```
 
 ## Local Proxy
@@ -94,8 +94,15 @@ sudo ifconfig lo0 alias 10.0.0.2 up
 go-forward -L 2222//proxy.com:2222
 ```
 
+## tls
+
+use tls for traffic encryption and identity authentication
+
 ```bash
+# server
 go run . -L tls://admin:admin@0.0.0.0:10000 -H 127.0.0.1
+
+# client
 go run . -L http://user:pass@0.0.0.0:1000 -F tls://admin:admin@127.0.0.1:10000 -C YOUR-CERT-TEXT
 
 
