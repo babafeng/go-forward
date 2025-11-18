@@ -122,7 +122,7 @@ func main() {
 	genkey := flag.String("genkey", "", "gen key and cert for tls proxy, format: genkey=hostname")
 	socksMax := flag.Int("socks-max", 100, "Maximum concurrent SOCKS5 connections")
 	routeConfigPath := flag.String("R", "", "Enable router mode with the given proxy policy config file")
-	routeConfigSystemProxy := flag.Bool("enable-system-proxy", false, "Enable system proxy in router mode")
+	routeConfigSystemProxy := flag.Bool("enable-system-proxy", true, "Enable system proxy in router mode")
 	flag.Parse()
 
 	if genkey != nil && *genkey != "" {
