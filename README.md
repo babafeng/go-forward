@@ -66,6 +66,36 @@ go-forward -L 1000-1005//10.0.0.1:1000-1005
 go-forward -R proxy-config.conf
 ```
 
+配置文件示例
+
+```ini
+[General]
+http-listen = 127.0.0.1:1080
+socks5-listen = 127.0.0.1:1081
+log-level = info
+log-format = text
+prefer-ipv6 = true
+ipv6 = true
+bypass-system = true
+skip-proxy = 192.168.0.0/16, 127.0.0.1/32
+dns-server = system
+default-proxy = PROXY
+
+[Proxy]
+PROXY0 = http, 127.0.0.1:1001, user, pass, 5s
+PROXY1 = http, 127.0.0.1:1002, , , 5s
+PROXY2 = socks5, 127.0.0.1:1003, , , 5s
+
+[Rule]
+DOMAIN-KEYWORD,vscode,PROXY0
+DOMAIN-KEYWORD,google.com,PROXY1
+DOMAIN,gemini.google.com,PROXY2
+IP-CIDR,10.0.0.0/8,PROXY2
+
+FINAL,DIRECT
+
+```
+
 ## Use tips
 
 While starting the proxy locally, forward the proxy port to the remote port
