@@ -53,18 +53,6 @@ type ServerConfig struct {
 	ServerHost string
 }
 
-// Updated ForwardConfig for ranges
-// type ForwardConfig struct {
-// 	ListenAddr      string // For single port listen (e.g., ":8080")
-// 	TargetAddr      string // For single port target (e.g., "host:80")
-// 	IsRange         bool
-// 	LocalStartPort  int
-// 	LocalEndPort    int
-// 	TargetHost      string
-// 	TargetStartPort int
-// 	TargetEndPort   int
-// }
-
 // 添加辅助函数用于解析端口范围
 func parsePortRange(rangeStr, sep string) (int, int, error) {
 	parts := strings.Split(rangeStr, sep)
@@ -122,7 +110,6 @@ func main() {
 	genkey := flag.String("genkey", "", "gen key and cert for tls proxy, format: genkey=hostname")
 	socksMax := flag.Int("socks-max", 100, "Maximum concurrent SOCKS5 connections")
 	routeConfigPath := flag.String("R", "", "Enable router mode with the given proxy policy config file")
-	routeConfigSystemProxy := flag.Bool("enable-system-proxy", true, "Enable system proxy in router mode")
 	flag.Parse()
 
 	if genkey != nil && *genkey != "" {
@@ -169,15 +156,13 @@ func main() {
 		go func() {
 			defer wg.Done()
 			defer close(routeDone)
-			if err := route.Run(routeCtx, route.Options{ConfigPath: cfgPath, SystemProxy: *routeConfigSystemProxy}); err != nil {
+			if err := route.Run(routeCtx, route.Options{ConfigPath: cfgPath}); err != nil {
 				log.Fatalf("router mode failed: %v", err)
 			}
 		}()
 	}
-	// Server mode is excluded in this multi-service setup for simplicity.
-	// Use a dedicated flag if server mode needs to run alongside others.
 
-	hasClientConfig := false // Track if any client config is found
+	hasClientConfig := false
 	isTLSProxies := false
 
 	for _, lVal := range lFlags {

@@ -63,7 +63,7 @@ go-forward -L 1000-1005//10.0.0.1:1000-1005
 使用方式
 
 ```bash
-go-forward -R proxy-config.conf -enable-system-proxy
+go-forward -R proxy-config.conf
 ```
 
 ## Use tips
@@ -110,12 +110,11 @@ use tls for traffic encryption and identity authentication
 
 ```bash
 # server
-go run . -L tls://admin:admin@0.0.0.0:10000 -H 127.0.0.1
+go-forward -L tls://admin:admin@0.0.0.0:10000 -H 0.0.0.0
+# or set cert
+go-forward -L tls://admin:admin@0.0.0.0:1000 -H 0.0.0.0 -K aaa = -C aaa
 
 # client
-go run . -L http://user:pass@0.0.0.0:1000 -F tls://admin:admin@127.0.0.1:10000 -C YOUR-CERT-TEXT
-
-
-go run . -L tls://0.0.0.0:1000 -H 0.0.0.0 -K aaa = -C aaa
+go-forward -L http://user:pass@0.0.0.0:1000 -F tls://admin:admin@127.0.0.1:10000 -C YOUR-CERT-TEXT
 
 ```

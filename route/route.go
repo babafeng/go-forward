@@ -20,10 +20,9 @@ import (
 )
 
 type Options struct {
-	ConfigPath  string
-	SystemProxy bool
-	HTTPAddr    string
-	SOCKS5Addr  string
+	ConfigPath string
+	HTTPAddr   string
+	SOCKS5Addr string
 }
 
 func watchConfig(ctx context.Context, watcher *config.Watcher, store *runtime.Store, levelVar *slog.LevelVar, logger *slog.Logger, listenCfg config.ListenConfig, httpProxyMgr, socks5ProxyMgr *systemproxy.Manager) error {
@@ -125,7 +124,6 @@ func buildSnapshot(cfg *config.Config) (*runtime.Snapshot, error) {
 
 func Run(ctx context.Context, opts Options) error {
 	configPath := opts.ConfigPath
-	isEnableSystemProxy := opts.SystemProxy
 	if configPath == "" {
 		configPath = "~/proxy-policy.conf"
 	}
@@ -146,39 +144,36 @@ func Run(ctx context.Context, opts Options) error {
 	levelVar.Set(parseLogLevel(cfg.Log.Level))
 	logger := newLogger(levelVar, cfg.Log.Format)
 
-	if isEnableSystemProxy {
-		var proxyMgr *systemproxy.Manager
-		if cfg.Listen.HTTP != "" {
-			log.Printf("enabling system HTTP proxy: %s", cfg.Listen.HTTP)
-			mgr, err := systemproxy.Enable(cfg.Listen.HTTP, cfg.General.SkipProxy, logger)
-			if err != nil {
-				log.Printf("failed to enable system proxy: %v", err)
-			} else {
-				proxyMgr = mgr
-				defer func() {
-					if err := proxyMgr.Disable(logger); err != nil {
-						log.Printf("failed to disable system proxy: %v", err)
-					}
-				}()
-			}
+	var proxyMgr *systemproxy.Manager
+	if cfg.Listen.HTTP != "" {
+		log.Printf("enabling system HTTP proxy: %s", cfg.Listen.HTTP)
+		mgr, err := systemproxy.Enable(cfg.Listen.HTTP, cfg.General.SkipProxy, logger)
+		if err != nil {
+			log.Printf("failed to enable system proxy: %v", err)
+		} else {
+			proxyMgr = mgr
+			defer func() {
+				if err := proxyMgr.Disable(logger); err != nil {
+					log.Printf("failed to disable system proxy: %v", err)
+				}
+			}()
 		}
+	}
 
-		var socks5ProxyMgr *systemproxy.Manager
-		if cfg.Listen.SOCKS5 != "" {
-			log.Printf("enabling system SOCKS5 proxy: %s", cfg.Listen.SOCKS5)
-			mgr, err := systemproxy.EnableSOCKS5(cfg.Listen.SOCKS5, cfg.General.SkipProxy, logger)
-			if err != nil {
-				log.Printf("failed to enable SOCKS5 system proxy: %v", err)
-			} else {
-				socks5ProxyMgr = mgr
-				defer func() {
-					if err := socks5ProxyMgr.Disable(logger); err != nil {
-						log.Printf("failed to disable SOCKS5 system proxy: %v", err)
-					}
-				}()
-			}
+	var socks5ProxyMgr *systemproxy.Manager
+	if cfg.Listen.SOCKS5 != "" {
+		log.Printf("enabling system SOCKS5 proxy: %s", cfg.Listen.SOCKS5)
+		mgr, err := systemproxy.EnableSOCKS5(cfg.Listen.SOCKS5, cfg.General.SkipProxy, logger)
+		if err != nil {
+			log.Printf("failed to enable SOCKS5 system proxy: %v", err)
+		} else {
+			socks5ProxyMgr = mgr
+			defer func() {
+				if err := socks5ProxyMgr.Disable(logger); err != nil {
+					log.Printf("failed to disable SOCKS5 system proxy: %v", err)
+				}
+			}()
 		}
-
 	}
 
 	snapshot, err := buildSnapshot(cfg)
@@ -233,19 +228,3 @@ func expandPath(path string) string {
 	}
 	return path
 }
-
-// func main() {
-// 	var opts Options
-// 	flag.StringVar(&opts.ConfigPath, "config", "~/proxy-policy.conf", "Path to configuration file")
-// 	flag.StringVar(&opts.HTTPAddr, "http", "", "Override HTTP proxy listen address")
-// 	flag.StringVar(&opts.SOCKS5Addr, "socks5", "", "Override SOCKS5 proxy listen address")
-// 	flag.Parse()
-
-// 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-// 	defer stop()
-
-// 	if err := Run(ctx, opts); err != nil {
-// 		fmt.Fprintf(os.Stderr, "route exited with error: %v\n", err)
-// 		os.Exit(1)
-// 	}
-// }
