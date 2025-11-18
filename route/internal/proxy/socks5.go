@@ -224,7 +224,6 @@ func (s *SOCKS5Server) logDecision(req *socksRequest, decision router.Decision) 
 			slog.Int("rule_index", decision.Rule.Index),
 		)
 	}
-	log.Printf("routing: %v", attrs)
 	log.Printf("routing: socks5 --> %v %v", net.JoinHostPort(req.host, req.port), attrs)
 }
 
