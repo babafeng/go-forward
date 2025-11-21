@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"go-forward/route/internal/config"
@@ -125,10 +128,26 @@ func buildSnapshot(cfg *config.Config, mmdbReader *geoip2.Reader) (*runtime.Snap
 
 func Run(ctx context.Context, opts Options) error {
 	configPath := opts.ConfigPath
+	configPath = opts.ConfigPath
 	if configPath == "" {
-		configPath = "~/proxy-policy.conf"
+		configPath = "~/.forward/proxy-config.conf"
 	}
 	configPath = expandPath(configPath)
+
+	// Ensure directory exists
+	configDir := filepath.Dir(configPath)
+	if err := ensureDir(configDir); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Check if config exists, if not create default
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		log.Printf("Config file not found, creating default at %s", configPath)
+		if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
+			return fmt.Errorf("failed to create default config: %w", err)
+		}
+	}
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -178,8 +197,20 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	var mmdbReader *geoip2.Reader
-	if _, err := os.Stat("Country.mmdb"); err == nil {
-		reader, err := geoip2.Open("Country.mmdb")
+	mmdbPath := filepath.Join(filepath.Dir(configPath), "Country.mmdb")
+	
+	// Check if MMDB exists, if not download
+	if _, err := os.Stat(mmdbPath); os.IsNotExist(err) {
+		log.Printf("Country.mmdb not found at %s, downloading...", mmdbPath)
+		if err := downloadMMDB(mmdbPath); err != nil {
+			log.Printf("failed to download Country.mmdb: %v", err)
+		} else {
+			log.Printf("Country.mmdb downloaded successfully")
+		}
+	}
+
+	if _, err := os.Stat(mmdbPath); err == nil {
+		reader, err := geoip2.Open(mmdbPath)
 		if err != nil {
 			log.Printf("failed to open Country.mmdb: %v", err)
 		} else {
@@ -243,3 +274,58 @@ func expandPath(path string) string {
 	}
 	return path
 }
+
+
+func ensureDir(path string) error {
+	return os.MkdirAll(path, 0755)
+}
+
+func downloadMMDB(path string) error {
+	url := "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb"
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	out, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+const defaultConfig = `[General]
+http-listen = 127.0.0.1:1080
+socks5-listen = 127.0.0.1:1081
+log-level = info
+log-format = text
+prefer-ipv6 = true
+ipv6 = true
+bypass-system = true
+skip-proxy = 192.168.0.0/16, 127.0.0.1/32
+dns-server = system
+default-proxy = PROXY
+
+[Proxy]
+PROXY0 = http, 127.0.0.1:1001, user, pass, 5s
+PROXY1 = http, 127.0.0.1:1002, , , 5s
+PROXY2 = socks5, 127.0.0.1:1003, , , 5s
+
+[Rule]
+DOMAIN-KEYWORD,vscode.com,PROXY0
+DOMAIN-KEYWORD,google.com,PROXY1
+DOMAIN,gemini.google.com,PROXY2
+IP-CIDR,10.0.0.0/8,PROXY2
+
+GEOIP,CN,DIRECT
+
+FINAL,PROXY0
+`

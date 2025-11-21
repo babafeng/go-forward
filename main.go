@@ -120,6 +120,13 @@ func main() {
 		return
 	}
 
+	// Default to router mode if no args provided
+	if flag.NFlag() == 0 {
+		defaultRouteConfig := "~/.forward/proxy-config.conf"
+		routeConfigPath = &defaultRouteConfig
+		log.Printf("No arguments provided, defaulting to router mode with config: %s", *routeConfigPath)
+	}
+
 	routeEnabled := *routeConfigPath != ""
 
 	if len(lFlags) == 0 && !routeEnabled {
