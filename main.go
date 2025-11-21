@@ -406,7 +406,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  HTTPS Proxy (Auth): go-forward -L https://myuser:mypass@0.0.0.0:8081")
 	fmt.Fprintln(os.Stderr, "  Local Port Forward (Single): go-forward -L 9000//remote.host:80")
 	fmt.Fprintln(os.Stderr, "  Local Port Forward (Range): go-forward -L 1000-1005//target.host:3000-3005") // New example
-	fmt.Fprintln(os.Stderr, "  Router Mode: go-forward -R /path/to/proxy-policy.conf")
+	fmt.Fprintln(os.Stderr, "  Router Mode: go-forward -R /path/to/proxy-config.conf")
 	fmt.Fprintln(os.Stderr, "  Combined Proxy + Reverse Tunnel:")
 	fmt.Fprintln(os.Stderr, "    go-forward -L http://0.0.0.0:8080 -L 2020//127.0.0.1:8080 -F tunnel.server.com:7000")
 }
