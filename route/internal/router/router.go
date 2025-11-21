@@ -2,9 +2,12 @@ package router
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"strings"
+
+	"github.com/oschwald/geoip2-golang"
 )
 
 // Action represents the routing outcome for a connection.
@@ -37,6 +40,7 @@ const (
 	matchSuffix
 	matchKeyword
 	matchCIDR
+	matchGEOIP
 )
 
 // RuleSpec is an intermediate description used to build an Engine.
@@ -69,6 +73,8 @@ func (r *Rule) MatchTypeString() string {
 		return "DOMAIN-KEYWORD"
 	case matchCIDR:
 		return "CIDR"
+	case matchGEOIP:
+		return "GEOIP"
 	default:
 		return "UNKNOWN"
 	}
@@ -88,12 +94,16 @@ type Engine struct {
 	suffixRules  []*Rule
 	keywordRules []*Rule
 	cidrRules    []*Rule
+	geoipRules   []*Rule
 	defaultDec   Decision
+	mmdbReader   *geoip2.Reader
 }
 
 // NewEngine builds a routing engine from rule specifications.
-func NewEngine(specs []RuleSpec) (*Engine, error) {
-	engine := &Engine{}
+func NewEngine(specs []RuleSpec, mmdbReader *geoip2.Reader) (*Engine, error) {
+	engine := &Engine{
+		mmdbReader: mmdbReader,
+	}
 	var seenFinal bool
 
 	for i, spec := range specs {
@@ -143,6 +153,8 @@ func NewEngine(specs []RuleSpec) (*Engine, error) {
 			engine.keywordRules = append(engine.keywordRules, rule)
 		case matchCIDR:
 			engine.cidrRules = append(engine.cidrRules, rule)
+		case matchGEOIP:
+			engine.geoipRules = append(engine.geoipRules, rule)
 		default:
 			return nil, fmt.Errorf("rule %d has unsupported match type", i)
 		}
@@ -191,6 +203,11 @@ func compileRule(t, v string, action Action, proxy string, idx int) (*Rule, erro
 			return nil, fmt.Errorf("invalid CIDR value %s", v)
 		}
 		return &Rule{Type: matchCIDR, IPNet: ipnet, Action: action, Proxy: proxy, Index: idx}, nil
+	case "GEOIP":
+		if v == "" {
+			return nil, fmt.Errorf("GEOIP rule requires country code")
+		}
+		return &Rule{Type: matchGEOIP, Value: strings.ToUpper(v), Action: action, Proxy: proxy, Index: idx}, nil
 	default:
 		return nil, fmt.Errorf("unsupported match type %s", t)
 	}
@@ -216,6 +233,9 @@ func (e *Engine) Decide(host string) Decision {
 		if ipDecision, ok := e.matchCIDR(ip); ok {
 			return ipDecision
 		}
+		if geoDecision, ok := e.matchGEOIP(ip); ok {
+			return geoDecision
+		}
 	}
 
 	// Suffix matches.
@@ -238,6 +258,30 @@ func (e *Engine) Decide(host string) Decision {
 	if ip := net.ParseIP(hostLower); ip != nil {
 		if ipDecision, ok := e.matchLegacyCIDR(ip); ok {
 			return ipDecision
+		}
+		// Check GEOIP for legacy IP
+		if addr, ok := netip.AddrFromSlice(ip); ok {
+			if geoDecision, ok := e.matchGEOIP(addr); ok {
+				return geoDecision
+			}
+		}
+	}
+
+	// If we have GEOIP rules and the host is a domain, we must resolve it to check GEOIP.
+	// Note: This can be slow and might not be desired for all users, but it's required for domain-based GEOIP matching.
+	if len(e.geoipRules) > 0 && e.mmdbReader != nil {
+		// Try to resolve
+		ips, err := net.LookupIP(host)
+		if err == nil && len(ips) > 0 {
+			// Check the first IP
+			if addr, ok := netip.AddrFromSlice(ips[0]); ok {
+				if geoDecision, ok := e.matchGEOIP(addr); ok {
+					return geoDecision
+				}
+			}
+		} else if err != nil {
+			// Log error or ignore? For now, just ignore as we can't resolve.
+			// log.Printf("failed to resolve %s for GEOIP check: %v", host, err)
 		}
 	}
 
@@ -269,4 +313,28 @@ func containsIP(n *net.IPNet, addr netip.Addr) bool {
 		return false
 	}
 	return n.Contains(net.IP(addr.AsSlice()))
+}
+
+func (e *Engine) matchGEOIP(ip netip.Addr) (Decision, bool) {
+	if e.mmdbReader == nil || len(e.geoipRules) == 0 {
+		return Decision{}, false
+	}
+
+	record, err := e.mmdbReader.Country(net.IP(ip.AsSlice()))
+	if err != nil {
+		log.Printf("failed to lookup GEOIP for %s: %v", ip, err)
+		return Decision{}, false
+	}
+
+	isoCode := record.Country.IsoCode
+	if isoCode == "" {
+		return Decision{}, false
+	}
+
+	for _, rule := range e.geoipRules {
+		if rule.Value == isoCode {
+			return Decision{Action: rule.Action, Proxy: rule.Proxy, Rule: rule, Matched: true}, true
+		}
+	}
+	return Decision{}, false
 }

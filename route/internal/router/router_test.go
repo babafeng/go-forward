@@ -14,7 +14,7 @@ func TestEngineDecide(t *testing.T) {
 		{Action: "FINAL", Fallback: "DIRECT"},
 	}
 
-	eng, err := router.NewEngine(specs)
+	eng, err := router.NewEngine(specs, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestEngineFinalProxy(t *testing.T) {
 		{Type: "DOMAIN", Value: "block.me", Action: "REJECT"},
 		{Action: "FINAL", Fallback: "PROXY", Proxy: "fallback"},
 	}
-	eng, err := router.NewEngine(specs)
+	eng, err := router.NewEngine(specs, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestEngineFinalProxy(t *testing.T) {
 
 func TestEngineRequiresFinal(t *testing.T) {
 	specs := []router.RuleSpec{{Type: "DOMAIN", Value: "example.com", Action: "DIRECT"}}
-	if _, err := router.NewEngine(specs); err == nil {
+	if _, err := router.NewEngine(specs, nil); err == nil {
 		t.Fatal("expected error for missing final rule")
 	}
 }
@@ -88,7 +88,7 @@ func TestEngineKeywordPriority(t *testing.T) {
 		{Type: "DOMAIN-KEYWORD", Value: "special", Action: "REJECT"},
 		{Action: "FINAL", Fallback: "DIRECT"},
 	}
-	eng, err := router.NewEngine(specs)
+	eng, err := router.NewEngine(specs, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -409,7 +409,7 @@ func normalizeProxyType(t string) string {
 
 func isSupportedMatchType(t string) bool {
 	switch t {
-	case "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "CIDR":
+	case "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "CIDR", "GEOIP":
 		return true
 	default:
 		return false

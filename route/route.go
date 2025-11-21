@@ -16,6 +16,7 @@ import (
 	"go-forward/route/internal/systemproxy"
 	"go-forward/route/internal/transport"
 
+	"github.com/oschwald/geoip2-golang"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -25,7 +26,7 @@ type Options struct {
 	SOCKS5Addr string
 }
 
-func watchConfig(ctx context.Context, watcher *config.Watcher, store *runtime.Store, levelVar *slog.LevelVar, logger *slog.Logger, listenCfg config.ListenConfig, httpProxyMgr, socks5ProxyMgr *systemproxy.Manager) error {
+func watchConfig(ctx context.Context, watcher *config.Watcher, store *runtime.Store, levelVar *slog.LevelVar, logger *slog.Logger, listenCfg config.ListenConfig, httpProxyMgr, socks5ProxyMgr *systemproxy.Manager, mmdbReader *geoip2.Reader) error {
 	currentListen := listenCfg
 	for {
 		select {
@@ -39,7 +40,7 @@ func watchConfig(ctx context.Context, watcher *config.Watcher, store *runtime.St
 				log.Printf("listen address changes require restart: current_http=%s, new_http=%s, current_socks5=%s, new_socks5=%s", currentListen.HTTP, cfg.Listen.HTTP, currentListen.SOCKS5, cfg.Listen.SOCKS5)
 				cfg.Listen = currentListen
 			}
-			snapshot, err := buildSnapshot(cfg)
+			snapshot, err := buildSnapshot(cfg, mmdbReader)
 			if err != nil {
 				log.Printf("failed to rebuild runtime: %v", err)
 				continue
@@ -87,7 +88,7 @@ func newLogger(level *slog.LevelVar, format string) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stdout, handlerOpts))
 }
 
-func buildSnapshot(cfg *config.Config) (*runtime.Snapshot, error) {
+func buildSnapshot(cfg *config.Config, mmdbReader *geoip2.Reader) (*runtime.Snapshot, error) {
 	serverSpecs := make([]transport.Spec, 0, len(cfg.Servers))
 	for _, srv := range cfg.Servers {
 		serverSpecs = append(serverSpecs, transport.Spec{
@@ -115,7 +116,7 @@ func buildSnapshot(cfg *config.Config) (*runtime.Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	eng, err := router.NewEngine(ruleSpecs)
+	eng, err := router.NewEngine(ruleSpecs, mmdbReader)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +177,21 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
-	snapshot, err := buildSnapshot(cfg)
+	var mmdbReader *geoip2.Reader
+	if _, err := os.Stat("Country.mmdb"); err == nil {
+		reader, err := geoip2.Open("Country.mmdb")
+		if err != nil {
+			log.Printf("failed to open Country.mmdb: %v", err)
+		} else {
+			mmdbReader = reader
+			defer mmdbReader.Close()
+			log.Printf("loaded Country.mmdb")
+		}
+	} else {
+		log.Printf("Country.mmdb not found, GEOIP rules will not work")
+	}
+
+	snapshot, err := buildSnapshot(cfg, mmdbReader)
 	if err != nil {
 		log.Printf("unable to build runtime: %v", err)
 		return err
@@ -202,7 +217,7 @@ func Run(ctx context.Context, opts Options) error {
 	} else {
 		defer watcher.Close()
 		group.Go(func() error {
-			return watchConfig(ctx, watcher, store, levelVar, logger, cfg.Listen, nil, nil)
+			return watchConfig(ctx, watcher, store, levelVar, logger, cfg.Listen, nil, nil, mmdbReader)
 		})
 	}
 
