@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -198,7 +198,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	var mmdbReader *geoip2.Reader
 	mmdbPath := filepath.Join(filepath.Dir(configPath), "Country.mmdb")
-	
+
 	// Check if MMDB exists, if not download
 	if _, err := os.Stat(mmdbPath); os.IsNotExist(err) {
 		log.Printf("Country.mmdb not found at %s, downloading...", mmdbPath)
@@ -229,17 +229,24 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	store := runtime.NewStore(snapshot)
 
-	log.Printf("configuration loaded: http=%s, socks5=%s", cfg.Listen.HTTP, cfg.Listen.SOCKS5)
+	log.Printf("configuration loaded: http=%s, socks5=%s, unified=%s", cfg.Listen.HTTP, cfg.Listen.SOCKS5, cfg.Listen.Unified)
 
 	group, ctx := errgroup.WithContext(ctx)
 
-	if cfg.Listen.HTTP != "" {
-		httpSrv := proxy.NewHTTPServer(cfg.Listen.HTTP, store, logger)
-		group.Go(func() error { return httpSrv.Serve(ctx) })
-	}
-	if cfg.Listen.SOCKS5 != "" {
-		socksSrv := proxy.NewSOCKS5Server(cfg.Listen.SOCKS5, store, logger)
-		group.Go(func() error { return socksSrv.Serve(ctx) })
+	if cfg.Listen.Unified != "" {
+		// Unified mode: HTTP + SOCKS5 on the same port
+		unifiedSrv := proxy.NewUnifiedServer(cfg.Listen.Unified, store, logger)
+		group.Go(func() error { return unifiedSrv.Serve(ctx) })
+	} else {
+		// Separate ports for HTTP and SOCKS5
+		if cfg.Listen.HTTP != "" {
+			httpSrv := proxy.NewHTTPServer(cfg.Listen.HTTP, store, logger)
+			group.Go(func() error { return httpSrv.Serve(ctx) })
+		}
+		if cfg.Listen.SOCKS5 != "" {
+			socksSrv := proxy.NewSOCKS5Server(cfg.Listen.SOCKS5, store, logger)
+			group.Go(func() error { return socksSrv.Serve(ctx) })
+		}
 	}
 
 	watcher, err := config.NewWatcher(configPath)
@@ -275,7 +282,6 @@ func expandPath(path string) string {
 	return path
 }
 
-
 func ensureDir(path string) error {
 	return os.MkdirAll(path, 0755)
 }
@@ -303,8 +309,7 @@ func downloadMMDB(path string) error {
 }
 
 const defaultConfig = `[General]
-http-listen = 127.0.0.1:1080
-socks5-listen = 127.0.0.1:1081
+listen = 127.0.0.1:1080
 log-level = info
 log-format = text
 prefer-ipv6 = true

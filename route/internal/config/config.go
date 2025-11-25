@@ -16,8 +16,9 @@ import (
 
 // ListenConfig defines local listener addresses.
 type ListenConfig struct {
-	HTTP   string
-	SOCKS5 string
+	HTTP    string
+	SOCKS5  string
+	Unified string // Unified proxy (HTTP + SOCKS5 on same port)
 }
 
 // LogConfig configures logging output.
@@ -137,6 +138,8 @@ func parseGeneralLine(cfg *Config, line string) error {
 		cfg.Listen.HTTP = value
 	case "socks5-listen", "socks5_listen", "socks5":
 		cfg.Listen.SOCKS5 = value
+	case "listen", "unified_listen", "unified":
+		cfg.Listen.Unified = value
 	case "log-level", "loglevel":
 		cfg.Log.Level = value
 	case "log-format", "logformat":
