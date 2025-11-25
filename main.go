@@ -203,7 +203,7 @@ func main() {
 				proxyPass, _ = parsedURL.User.Password()
 			}
 
-			if requiresPrivilegedPort(proxyListenAddr) && !isCurrentUserPrivileged() {
+			if requiresPrivilegedPort(proxyListenAddr) && !route.IsCurrentUserPrivileged() {
 				log.Fatalf("port %s requires elevated privileges; please use sudo or choose a port >= 1024", proxyListenAddr)
 			}
 			proxies = append(proxies, ProxyConfig{

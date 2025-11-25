@@ -230,8 +230,9 @@ func (s *HTTPServer) logDecision(proto, domain, port string, decision router.Dec
 		slog.Bool("matched", decision.Matched),
 		slog.Duration("latency", time.Since(start)),
 	}
+	upstream := "None"
 	if decision.Proxy != "" {
-		attrs = append(attrs, slog.String("upstream", decision.Proxy))
+		upstream = decision.Proxy
 	}
 	if decision.Rule != nil {
 		attrs = append(attrs,
@@ -245,5 +246,5 @@ func (s *HTTPServer) logDecision(proto, domain, port string, decision router.Dec
 		log.Printf("routing: %v", attrs)
 		return
 	}
-	log.Printf("routing: %v %v --> %v %v", proto, remote, net.JoinHostPort(domain, port), attrs)
+	log.Printf("routing: %v %v %v --> %v %v", upstream, proto, remote, net.JoinHostPort(domain, port), attrs)
 }

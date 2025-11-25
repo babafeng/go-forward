@@ -72,15 +72,16 @@ func (s *SOCKS5Server) Serve(ctx context.Context) error {
 func (s *SOCKS5Server) handleConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
+	remoteAddr := conn.RemoteAddr().String()
 
 	if err := s.handleGreeting(reader, conn); err != nil {
-		log.Printf("socks5 read request failed: %v", err)
+		log.Printf("socks5 [%s] greeting failed: %v", remoteAddr, err)
 		return
 	}
 
-	req, err := s.readRequest(reader)
+	req, err := s.readRequest(reader, remoteAddr)
 	if err != nil {
-		log.Printf("socks5 read request failed: %v", err)
+		log.Printf("socks5 [%s] read request failed: %v", remoteAddr, err)
 		s.sendReply(conn, 0x01, "")
 		return
 	}
@@ -143,7 +144,7 @@ func (s *SOCKS5Server) handleGreeting(reader *bufio.Reader, conn net.Conn) error
 	return nil
 }
 
-func (s *SOCKS5Server) readRequest(reader *bufio.Reader) (*socksRequest, error) {
+func (s *SOCKS5Server) readRequest(reader *bufio.Reader, remoteAddr string) (*socksRequest, error) {
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(reader, header); err != nil {
 		return nil, err
@@ -151,12 +152,14 @@ func (s *SOCKS5Server) readRequest(reader *bufio.Reader) (*socksRequest, error) 
 	if header[0] != 0x05 {
 		return nil, fmt.Errorf("invalid version %d", header[0])
 	}
-	if header[1] != 0x01 {
-		return nil, fmt.Errorf("unsupported command %d", header[1])
-	}
 
+	cmd := header[1]
 	addrType := header[3]
+
+	// 先读取目标地址和端口,即使命令不支持也要读取以便记录日志
 	var host string
+	var port string
+
 	switch addrType {
 	case 0x01: // IPv4
 		addr := make([]byte, 4)
@@ -188,7 +191,21 @@ func (s *SOCKS5Server) readRequest(reader *bufio.Reader) (*socksRequest, error) 
 	if _, err := io.ReadFull(reader, portBytes); err != nil {
 		return nil, err
 	}
-	port := fmt.Sprintf("%d", binary.BigEndian.Uint16(portBytes))
+	port = fmt.Sprintf("%d", binary.BigEndian.Uint16(portBytes))
+
+	// 检查命令类型
+	if cmd != 0x01 {
+		cmdName := "UNKNOWN"
+		switch cmd {
+		case 0x01:
+			cmdName = "CONNECT"
+		case 0x02:
+			cmdName = "BIND"
+		case 0x03:
+			cmdName = "UDP_ASSOCIATE"
+		}
+		return nil, fmt.Errorf("unsupported command %d (%s), target: %s:%s", cmd, cmdName, host, port)
+	}
 
 	return &socksRequest{host: host, port: port, atyp: addrType}, nil
 }
@@ -214,8 +231,9 @@ func (s *SOCKS5Server) logDecision(req *socksRequest, decision router.Decision) 
 		slog.String("action", decision.Action.String()),
 		slog.Bool("matched", decision.Matched),
 	}
+	upstream := "None"
 	if decision.Proxy != "" {
-		attrs = append(attrs, slog.String("upstream", decision.Proxy))
+		upstream = decision.Proxy
 	}
 	if decision.Rule != nil {
 		attrs = append(attrs,
@@ -224,7 +242,7 @@ func (s *SOCKS5Server) logDecision(req *socksRequest, decision router.Decision) 
 			slog.Int("rule_index", decision.Rule.Index),
 		)
 	}
-	log.Printf("routing: socks5 --> %v %v", net.JoinHostPort(req.host, req.port), attrs)
+	log.Printf("routing: %v socks5 --> %v %v", upstream, net.JoinHostPort(req.host, req.port), attrs)
 }
 
 type socksRequest struct {
