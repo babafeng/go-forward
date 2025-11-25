@@ -60,6 +60,10 @@ go-forward -L 1000-1005//10.0.0.1:1000-1005
 
 在本地启动http/socks5代理，并将流量根据策略转发到不同的远程代理服务器
 
+Shadowrocket 风格规则：`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR`
+
+策略动作：`PROXY`、`DIRECT`、`REJECT`、`FINAL`（默认策略）
+
 使用方式
 
 ```bash

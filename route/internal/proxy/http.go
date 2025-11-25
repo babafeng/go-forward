@@ -230,10 +230,22 @@ func (s *HTTPServer) logDecision(proto, domain, port string, decision router.Dec
 		slog.Bool("matched", decision.Matched),
 		slog.Duration("latency", time.Since(start)),
 	}
-	upstream := "None"
-	if decision.Proxy != "" {
-		upstream = decision.Proxy
+	var upstream string
+	switch decision.Action {
+	case router.ActionProxy:
+		if decision.Proxy != "" {
+			upstream = decision.Proxy
+		} else {
+			upstream = "None" // Consistent with original behavior if Proxy is empty
+		}
+	case router.ActionDirect:
+		upstream = "DIRECT"
+	case router.ActionReject:
+		upstream = "REJECT"
+	default:
+		upstream = "None" // Default for other actions
 	}
+	attrs = append(attrs, slog.String("upstream", upstream))
 	if decision.Rule != nil {
 		attrs = append(attrs,
 			slog.String("rule_type", decision.Rule.MatchTypeString()),

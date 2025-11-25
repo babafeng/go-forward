@@ -266,9 +266,20 @@ func (s *SOCKS5Server) logDecision(req *socksRequest, decision router.Decision) 
 		slog.String("action", decision.Action.String()),
 		slog.Bool("matched", decision.Matched),
 	}
-	upstream := "None"
-	if decision.Proxy != "" {
-		upstream = decision.Proxy
+	var upstream string
+	switch decision.Action {
+	case router.ActionProxy:
+		if decision.Proxy != "" {
+			upstream = decision.Proxy
+		} else {
+			upstream = "None" // Consistent with original behavior if Proxy is empty
+		}
+	case router.ActionDirect:
+		upstream = "DIRECT"
+	case router.ActionReject:
+		upstream = "REJECT"
+	default:
+		upstream = "None" // Default for other actions
 	}
 	if decision.Rule != nil {
 		attrs = append(attrs,
