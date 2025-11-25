@@ -227,7 +227,7 @@ func (s *SOCKS5Server) readRequest(reader *bufio.Reader, remoteAddr string) (*so
 	port = fmt.Sprintf("%d", binary.BigEndian.Uint16(portBytes))
 
 	// 检查命令类型
-	if cmd != 0x01 {
+	if cmd != 0x01 && cmd != 0x03 {
 		cmdName := "UNKNOWN"
 		switch cmd {
 		case 0x01:

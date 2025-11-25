@@ -8,8 +8,7 @@ import (
 )
 
 const sampleConfig = `[General]
-http-listen = 0.0.0.0:1080
-socks5-listen = 0.0.0.0:1081
+listen = 0.0.0.0:1080
 log-level = debug
 log-format = json
 prefer-ipv6 = true
